@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect x="16" y="8" width="32" height="48" rx="4" fill="#e2e8f0" stroke="#1e3a8a" stroke-width="3"/>
+  <!-- Sand layer -->
+  <rect x="18" y="28" width="28" height="26" fill="#d2b48c"/>
+  <!-- Composite particles -->
+  <circle cx="26" cy="22" r="3.5" fill="#8b0000"/>
+  <circle cx="38" cy="24" r="3.5" fill="#8b0000"/>
+  <circle cx="32" cy="18" r="3.5" fill="#8b0000"/>
+  <circle cx="28" cy="38" r="3.5" fill="#8b0000"/>
+  <circle cx="36" cy="44" r="3.5" fill="#8b0000"/>
+  <!-- Air bubbles -->
+  <circle cx="24" cy="46" r="2" fill="#38bdf8" opacity="0.8"/>
+  <circle cx="38" cy="34" r="2" fill="#38bdf8" opacity="0.8"/>
+  <!-- Base collar -->
+  <rect x="14" y="56" width="36" height="6" rx="2" fill="#0f172a"/>
+</svg>

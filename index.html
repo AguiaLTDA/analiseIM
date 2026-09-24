@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Análise de Mistura em Leito Fluidizado | CEUNES / UFES</title>
+    <link rel="icon" type="image/svg+xml" href="/static/img/favicon.svg">
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+
+    <header>
+        <div class="header-title">
+            <h1>Laboratório de Fluidização — CEUNES / UFES</h1>
+            <p>Análise de Concentração de Compósito e Areia via Visão Computacional (Não Supervisionada)</p>
+        </div>
+        <span class="badge">IA Não Supervisionada (CIELAB)</span>
+    </header>
+
+    <div class="container">
+        <!-- Coluna da Esquerda: Carregamento e Seleção de ROI -->
+        <div class="card">
+            <h2>1. Carregamento e Seleção da ROI</h2>
+            
+            <div class="controls-row">
+                <button class="btn btn-outline" id="btnCarregarExemplo">
+                    📂 Usar Quadro Padrão
+                </button>
+                <input type="file" id="inputArquivo" accept="image/*" style="display: none;">
+                <button class="btn btn-outline" onclick="document.getElementById('inputArquivo').click()">
+                    ⬆️ Enviar Imagem
+                </button>
+                <div class="input-group">
+                    <label for="colLargura">Largura Coluna (mm):</label>
+                    <input type="number" id="colLargura" value="60.0" step="0.5">
+                </div>
+            </div>
+
+            <div class="canvas-container" id="canvasBox">
+                <canvas id="mainCanvas"></canvas>
+            </div>
+
+            <div class="roi-info-banner">
+                <span id="roiCoords">ROI: Arraste o mouse na imagem para selecionar</span>
+                <span id="roiDims">Tamanho: 0 x 0 px</span>
+            </div>
+
+            <div style="margin-top: 16px;">
+                <button class="btn btn-success" id="btnAnalisar" style="width: 100%; justify-content: center;" disabled>
+                    ⚡ Analisar Concentração na ROI
+                </button>
+            </div>
+        </div>
+
+        <!-- Coluna da Direita: Resultados e Gráficos -->
+        <div class="card">
+            <h2>2. Resultados Quantitativos da Mistura</h2>
+
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="label">Conc. Média (%)</div>
+                    <div class="value" id="valMedia">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">Desvio Padrão (&sigma;)</div>
+                    <div class="value" id="valDesvio">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">Índice de Lacey (M)</div>
+                    <div class="value" id="valLacey">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">Altura Avaliada (mm)</div>
+                    <div class="value" id="valAltura">-</div>
+                </div>
+            </div>
+
+            <div class="view-tabs">
+                <button class="tab-btn active" id="tabGrafico" onclick="alternarAba('grafico')">📈 Gráfico do Perfil C(z)</button>
+                <button class="tab-btn" id="tabSegmentado" onclick="alternarAba('segmentado')">🎨 Máscara Segmentada</button>
+            </div>
+
+            <div class="result-view" id="displayResultados">
+                <div class="placeholder-text" id="placeholderMsg">
+                    Selecione a ROI na imagem à esquerda e clique em <b>"Analisar Concentração na ROI"</b>.
+                </div>
+                <img id="imgGrafico" style="display: none;" alt="Perfil de Concentração">
+                <img id="imgSegmentada" style="display: none;" alt="Segmentação de Fases">
+                <div class="spinner" id="loadingSpinner" style="display: none;"></div>
+            </div>
+
+            <div style="margin-top: 18px; display: flex; justify-content: space-between; align-items: center;">
+                <h3 style="font-size: 0.95rem;">Tabela Resumo do Perfil Vertical</h3>
+                <button class="btn btn-outline" id="btnDownloadCSV" style="padding: 6px 12px; font-size: 0.8rem;" disabled>
+                    📥 Baixar Planilha CSV
+                </button>
+            </div>
+
+            <div class="table-wrapper">
+                <table id="tabelaResultados">
+                    <thead>
+                        <tr>
+                            <th>Cota Vertical z (mm)</th>
+                            <th>Concentração Compósito (%)</th>
+                            <th>Fração de Gás (%)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tabelaCorpo">
+                        <tr><td colspan="3" style="color: var(--text-muted);">Nenhum dado processado ainda.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Script JavaScript Modular -->
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

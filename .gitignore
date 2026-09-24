@@ -1,0 +1,10 @@
+# Ambiente virtual e cache Python
+.venv/
+__pycache__/
+*.pyc
+
+# Configuração local do Claude Code
+.claude/
+
+# Vídeo bruto do experimento (não usado pelo código)
+*.mp4
