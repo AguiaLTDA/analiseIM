@@ -8,6 +8,7 @@ Execução:
 
 import base64
 import io
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -283,4 +284,7 @@ def gerar_overlay(roi_bgr: np.ndarray, fases: np.ndarray) -> str:
 
 
 if __name__ == "__main__":
-    uvicorn.run("app:app", host="127.0.0.1", port=8000, reload=False)
+    # Em hospedagens (Railway etc.) a porta vem da variável PORT e é preciso escutar em 0.0.0.0
+    porta = int(os.environ.get("PORT", 8000))
+    host = "0.0.0.0" if "PORT" in os.environ else "127.0.0.1"
+    uvicorn.run("app:app", host=host, port=porta, reload=False)
