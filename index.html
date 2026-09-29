@@ -14,10 +14,15 @@
             <h1>Laboratório de Fluidização — CEUNES / UFES</h1>
             <p>Análise de Concentração de Compósito e Areia via Visão Computacional (Não Supervisionada)</p>
         </div>
-        <span class="badge">IA Não Supervisionada (CIELAB)</span>
+        <span class="badge" id="badgeModo">IA Não Supervisionada (CIELAB)</span>
     </header>
 
-    <div class="container">
+    <div class="view-nav">
+        <button class="view-nav-btn active" id="navAnalise" onclick="mudarView('analise')">📊 Análise</button>
+        <button class="view-nav-btn" id="navCalibracao" onclick="mudarView('calibracao')">🧪 Calibração</button>
+    </div>
+
+    <div class="container" id="viewAnalise">
         <!-- Coluna da Esquerda: Carregamento e Seleção de ROI -->
         <div class="card">
             <h2>1. Carregamento e Seleção da ROI</h2>
@@ -33,6 +38,13 @@
                 <div class="input-group">
                     <label for="colLargura">Largura Coluna (mm):</label>
                     <input type="number" id="colLargura" value="60.0" step="0.5">
+                </div>
+                <div class="input-group">
+                    <label for="modoLeitura">Modo de leitura:</label>
+                    <select id="modoLeitura">
+                        <option value="luminosidade">Luminosidade (luz visível)</option>
+                        <option value="uv">Fluorescência UV</option>
+                    </select>
                 </div>
             </div>
 
@@ -73,6 +85,10 @@
                     <div class="label">Altura Avaliada (mm)</div>
                     <div class="value" id="valAltura">-</div>
                 </div>
+                <div class="stat-card">
+                    <div class="label">Conc. Mássica Calibrada (%)</div>
+                    <div class="value" id="valMassica" style="font-size: 1.1rem;">-</div>
+                </div>
             </div>
 
             <div class="view-tabs">
@@ -102,13 +118,115 @@
                         <tr>
                             <th>Cota Vertical z (mm)</th>
                             <th>Concentração Compósito (%)</th>
+                            <th>Conc. Mássica Calibrada (%)</th>
                             <th>Fração de Gás (%)</th>
                         </tr>
                     </thead>
                     <tbody id="tabelaCorpo">
-                        <tr><td colspan="3" style="color: var(--text-muted);">Nenhum dado processado ainda.</td></tr>
+                        <tr><td colspan="4" style="color: var(--text-muted);">Nenhum dado processado ainda.</td></tr>
                     </tbody>
                 </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Aba de Calibração: curva C(z) medido -> fração mássica real -->
+    <div class="container" id="viewCalibracao" style="display: none;">
+        <div class="card">
+            <h2>1. Padrão de Calibração</h2>
+            <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 14px;">
+                Fotografe uma mistura homogênea de areia + compósito com fração mássica de PEBD conhecida
+                (tipicamente entre 1% e 5%), nas mesmas condições de câmera e iluminação da análise.
+            </p>
+
+            <div class="controls-row">
+                <div class="input-group">
+                    <label for="calModo">Modo:</label>
+                    <select id="calModo">
+                        <option value="luminosidade">Luminosidade (luz visível)</option>
+                        <option value="uv">Fluorescência UV</option>
+                    </select>
+                </div>
+                <div class="input-group">
+                    <label for="calFracaoReal">Fração mássica real (%):</label>
+                    <input type="number" id="calFracaoReal" min="0" max="100" step="0.1" placeholder="1 a 5">
+                </div>
+            </div>
+            <div class="controls-row">
+                <input type="file" id="calInputArquivo" accept="image/*" style="display: none;">
+                <button class="btn btn-outline" onclick="document.getElementById('calInputArquivo').click()">
+                    ⬆️ Enviar Imagem do Padrão
+                </button>
+            </div>
+
+            <div class="canvas-container" id="calCanvasBox">
+                <canvas id="calCanvas"></canvas>
+            </div>
+
+            <div class="roi-info-banner">
+                <span id="calRoiCoords">ROI: Envie a imagem do padrão e arraste o mouse para selecionar</span>
+                <span id="calRoiDims">Tamanho: 0 x 0 px</span>
+            </div>
+
+            <div style="margin-top: 16px;">
+                <button class="btn btn-success" id="btnCalAdicionar" style="width: 100%; justify-content: center;" disabled>
+                    ➕ Adicionar Ponto de Calibração
+                </button>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>2. Curva de Calibração</h2>
+
+            <div class="input-group" style="margin-bottom: 14px;">
+                <label>Pontos cadastrados no modo:</label>
+                <span id="calModoLabel" style="font-weight: 700; color: var(--primary);">Luminosidade</span>
+            </div>
+
+            <div class="table-wrapper" style="max-height: 200px;">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>C(z) medido (%)</th>
+                            <th>Fração real (%)</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody id="calTabelaPontos">
+                        <tr><td colspan="4" style="color: var(--text-muted);">Nenhum ponto cadastrado.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div style="margin-top: 14px;">
+                <button class="btn" id="btnCalAjustar" style="width: 100%; justify-content: center;" disabled>
+                    📐 Calcular Curva de Calibração (mínimo 3 pontos)
+                </button>
+            </div>
+
+            <div id="calResultado" style="margin-top: 18px; display: none;">
+                <div class="stats-grid" style="grid-template-columns: repeat(2, 1fr);">
+                    <div class="stat-card">
+                        <div class="label">Fórmula</div>
+                        <div class="value" id="calFormula" style="font-size: 1rem;">-</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="label">R²</div>
+                        <div class="value" id="calR2">-</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="label">Limite de Detecção</div>
+                        <div class="value" id="calLD" style="font-size: 1.1rem;">-</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="label">Limite de Quantificação</div>
+                        <div class="value" id="calLQ" style="font-size: 1.1rem;">-</div>
+                    </div>
+                </div>
+                <div class="result-view" style="margin-top: 14px;">
+                    <img id="calGrafico" alt="Curva de calibração">
+                </div>
             </div>
         </div>
     </div>
