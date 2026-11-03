@@ -48,6 +48,12 @@
                 </div>
             </div>
 
+            <div class="ferramentas-roi">
+                <button class="btn btn-outline ativo" id="ferrROI" title="Arraste na imagem para definir a região analisada">▭ Selecionar ROI</button>
+                <button class="btn btn-outline exclusao" id="ferrExcl" title="Arraste na imagem para marcar uma área que não deve ser analisada">⛔ Marcar zona de exclusão</button>
+                <button class="btn btn-outline" id="btnLimparExcl" disabled>🗑 Limpar exclusões</button>
+            </div>
+
             <div class="canvas-container" id="canvasBox">
                 <canvas id="mainCanvas"></canvas>
             </div>
@@ -56,6 +62,7 @@
                 <span id="roiCoords">ROI: Arraste o mouse na imagem para selecionar</span>
                 <span id="roiDims">Tamanho: 0 x 0 px</span>
             </div>
+            <div class="lista-exclusoes" id="listaExcl"></div>
 
             <div style="margin-top: 16px;">
                 <button class="btn btn-success" id="btnAnalisar" style="width: 100%; justify-content: center;" disabled>
@@ -88,6 +95,10 @@
                 <div class="stat-card">
                     <div class="label">Conc. Mássica Calibrada (%)</div>
                     <div class="value" id="valMassica" style="font-size: 1.1rem;">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">Área Excluída da ROI (%)</div>
+                    <div class="value" id="valExcluido">-</div>
                 </div>
             </div>
 
@@ -159,6 +170,12 @@
                 </button>
             </div>
 
+            <div class="ferramentas-roi">
+                <button class="btn btn-outline ativo" id="calFerrROI" title="Arraste na imagem para definir a região analisada">▭ Selecionar ROI</button>
+                <button class="btn btn-outline exclusao" id="calFerrExcl" title="Arraste na imagem para marcar uma área que não deve ser analisada">⛔ Marcar zona de exclusão</button>
+                <button class="btn btn-outline" id="calBtnLimparExcl" disabled>🗑 Limpar exclusões</button>
+            </div>
+
             <div class="canvas-container" id="calCanvasBox">
                 <canvas id="calCanvas"></canvas>
             </div>
@@ -167,6 +184,7 @@
                 <span id="calRoiCoords">ROI: Envie a imagem do padrão e arraste o mouse para selecionar</span>
                 <span id="calRoiDims">Tamanho: 0 x 0 px</span>
             </div>
+            <div class="lista-exclusoes" id="calListaExcl"></div>
 
             <div style="margin-top: 16px;">
                 <button class="btn btn-success" id="btnCalAdicionar" style="width: 100%; justify-content: center;" disabled>

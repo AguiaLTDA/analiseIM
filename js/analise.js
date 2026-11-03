@@ -144,11 +144,21 @@
     }
 
     // -----------------------------------------------------------------------
-    // Segmentação: 0 = compósito, 1 = areia, 2 = gás
+    // Segmentação: 0 = compósito, 1 = areia, 2 = gás, 3 = zona de exclusão
     // -----------------------------------------------------------------------
 
+    const FASE_EXCLUIDA = 3;
+
+    /**
+     * img.excluido (opcional): Uint8Array do tamanho da ROI, 1 = pixel numa zona de exclusão.
+     * Pixels excluídos não entram no ajuste do K-Means nem em nenhuma contagem.
+     */
     function segmentar(img, modo) {
-        return modo === 'uv' ? segmentarFasesUV(img) : segmentarFases(img);
+        const seg = modo === 'uv' ? segmentarFasesUV(img) : segmentarFases(img);
+        if (img.excluido) {
+            for (let i = 0; i < seg.fases.length; i++) if (img.excluido[i]) seg.fases[i] = FASE_EXCLUIDA;
+        }
+        return seg;
     }
 
     /** K-Means++ em CIELAB; retorna { centros, compacidade }. */
@@ -221,14 +231,25 @@
         const n = img.width * img.height;
         const lab = rgbParaLab8(desfoqueGaussiano(img, 3), n);
 
-        // Ajuste numa amostra (imagens grandes), 5 tentativas, fica a de menor compacidade
+        // Ajuste só com os pixels fora das zonas de exclusão (amostrados se forem muitos);
+        // várias tentativas, fica a de menor compacidade
         const rng = mulberry32(42);
+        let validos = null;
+        if (img.excluido) {
+            validos = [];
+            for (let i = 0; i < n; i++) if (!img.excluido[i]) validos.push(i);
+            if (validos.length < 100) throw new Error('Quase toda a ROI está em zonas de exclusão; não há pixels para analisar.');
+        }
+        const nValidos = validos ? validos.length : n;
+        const indice = j => (validos ? validos[j] : j);
+
         let pontos = lab, nAjuste = n;
-        if (n > KMEANS_MAX_AMOSTRAS) {
-            nAjuste = KMEANS_MAX_AMOSTRAS;
+        if (validos || n > KMEANS_MAX_AMOSTRAS) {
+            const amostrar = nValidos > KMEANS_MAX_AMOSTRAS;
+            nAjuste = amostrar ? KMEANS_MAX_AMOSTRAS : nValidos;
             pontos = new Uint8Array(nAjuste * 3);
             for (let i = 0; i < nAjuste; i++) {
-                const j = Math.floor(rng() * n);
+                const j = indice(amostrar ? Math.floor(rng() * nValidos) : i);
                 pontos[i * 3] = lab[j * 3]; pontos[i * 3 + 1] = lab[j * 3 + 1]; pontos[i * 3 + 2] = lab[j * 3 + 2];
             }
         }
@@ -304,20 +325,24 @@
             }
         }
 
-        // Mediana de L* por coluna, suavizada por média móvel
+        // Mediana de L* por coluna (sem os pixels excluídos), suavizada por média móvel
         const mediana = new Float64Array(w);
-        const coluna = new Float32Array(h);
         for (let x = 0; x < w; x++) {
-            for (let y = 0; y < h; y++) coluna[y] = lStar[y * w + x];
-            const ord = Array.from(coluna).sort((p, q) => p - q);
-            mediana[x] = h % 2 ? ord[(h - 1) / 2] : (ord[h / 2 - 1] + ord[h / 2]) / 2;
+            const ord = [];
+            for (let y = 0; y < h; y++) if (!img.excluido || !img.excluido[y * w + x]) ord.push(lStar[y * w + x]);
+            ord.sort((p, q) => p - q);
+            const m = ord.length;
+            mediana[x] = m === 0 ? NaN : m % 2 ? ord[(m - 1) / 2] : (ord[m / 2 - 1] + ord[m / 2]) / 2;
         }
         const k = Math.max(1, Math.floor(w / 20));
         const medianaSuave = new Float64Array(w);
         for (let x = 0; x < w; x++) {
-            let s = 0;
-            for (let j = -k; j <= k; j++) s += mediana[Math.min(w - 1, Math.max(0, x + j))];
-            medianaSuave[x] = s / (2 * k + 1);
+            let s = 0, cont = 0;
+            for (let j = -k; j <= k; j++) {
+                const v = mediana[Math.min(w - 1, Math.max(0, x + j))];
+                if (!Number.isNaN(v)) { s += v; cont++; }
+            }
+            medianaSuave[x] = cont ? s / cont : 0;  // coluna toda excluída: valor irrelevante
         }
 
         const fases = new Uint8Array(n).fill(1);
@@ -335,27 +360,35 @@
     // Perfil vertical, estatísticas e Índice de Lacey
     // -----------------------------------------------------------------------
 
-    /** Perfil por linha de pixels, suavizado; z = 0 na base da ROI, ordenado de baixo para cima. */
+    /**
+     * Perfil por linha de pixels, suavizado; z = 0 na base da ROI, ordenado de baixo para cima.
+     * Zonas de exclusão: C(z) e gás usam só os pixels válidos, mas a cota só é considerada
+     * leito se os sólidos ocuparem ao menos FRACAO_SOLIDOS_MIN da largura inteira da ROI
+     * (cotas quase todas excluídas ficam sem valor em vez de virar um ruído de poucos pixels).
+     */
     function calcularPerfil(seg, mmPorPx) {
         const { fases, width: w, height: h } = seg;
         const comp = new Float64Array(h), areia = new Float64Array(h), gas = new Float64Array(h);
+        const excl = new Float64Array(h);
         for (let y = 0; y < h; y++) {
             for (let x = 0; x < w; x++) {
                 const f = fases[y * w + x];
-                if (f === 0) comp[y]++; else if (f === 1) areia[y]++; else gas[y]++;
+                if (f === 0) comp[y]++; else if (f === 1) areia[y]++; else if (f === 2) gas[y]++; else excl[y]++;
             }
         }
         const janela = Math.max(1, Math.round(JANELA_SUAVIZACAO_MM / mmPorPx));
         const compS = somaMovel(comp, janela), areiaS = somaMovel(areia, janela), gasS = somaMovel(gas, janela);
+        const exclS = somaMovel(excl, janela);
 
         const zMm = new Float64Array(h), cPct = new Float64Array(h), gasPct = new Float64Array(h);
         for (let i = 0; i < h; i++) {
             const y = h - 1 - i;  // linha 0 da imagem é o topo
             const solidos = compS[y] + areiaS[y];
-            const total = solidos + gasS[y];
+            const validos = solidos + gasS[y];
+            const area = validos + exclS[y];
             zMm[i] = (i + 0.5) * mmPorPx;
-            cPct[i] = total > 0 && solidos / total >= FRACAO_SOLIDOS_MIN ? 100 * compS[y] / solidos : NaN;
-            gasPct[i] = total > 0 ? 100 * gasS[y] / total : NaN;
+            cPct[i] = area > 0 && solidos / area >= FRACAO_SOLIDOS_MIN ? 100 * compS[y] / solidos : NaN;
+            gasPct[i] = validos > 0 ? 100 * gasS[y] / validos : NaN;
         }
         return { zMm, cPct, gasPct };
     }
@@ -390,12 +423,15 @@
         const n = validos.length;
         const media = n ? validos.reduce((s, v) => s + v, 0) / n : 0;
         const desvio = n ? Math.sqrt(validos.reduce((s, v) => s + (v - media) ** 2, 0) / n) : 0;
+        let nExcluidos = 0;
+        for (let i = 0; i < seg.fases.length; i++) if (seg.fases[i] === FASE_EXCLUIDA) nExcluidos++;
         return {
             media_comp: arredondar(media, 3),
             desvio_comp: arredondar(desvio, 3),
             max_comp: n ? arredondar(Math.max(...validos), 3) : 0,
             altura_total_mm: arredondar(seg.height * mmPorPx, 1),
             lacey_index: indiceLacey(seg, mmPorPx),
+            excluido_pct: arredondar(100 * nExcluidos / seg.fases.length, 2),
         };
     }
 
@@ -507,7 +543,10 @@
     // Imagens de saída (precisam de DOM / canvas)
     // -----------------------------------------------------------------------
 
-    /** Original | segmentação colorida, lado a lado, como JPEG (data URL). */
+    /**
+     * Original | segmentação colorida, lado a lado, como JPEG (data URL).
+     * Zonas de exclusão aparecem na segmentação em cinza hachurado, sem cor de fase.
+     */
     function gerarOverlay(img, seg) {
         const { width: w, height: h } = img;
         const canvas = document.createElement('canvas');
@@ -520,12 +559,14 @@
         for (let y = 0; y < h; y++) {
             for (let x = 0; x < w; x++) {
                 const src = (y * w + x) * 4;
-                const cor = CORES_FASES[seg.fases[y * w + x]];
+                const fase = seg.fases[y * w + x];
                 const esq = (y * canvas.width + x) * 4;
                 const dir = (y * canvas.width + x + w + 4) * 4;
                 for (let c = 0; c < 3; c++) {
                     d[esq + c] = img.data[src + c];
-                    d[dir + c] = Math.round(0.35 * img.data[src + c] + 0.65 * cor[c]);
+                    d[dir + c] = fase === FASE_EXCLUIDA
+                        ? ((x + y) % 8 < 2 ? 95 : 175)
+                        : Math.round(0.35 * img.data[src + c] + 0.65 * CORES_FASES[fase][c]);
                 }
             }
         }

@@ -5,16 +5,47 @@
  */
 
 /**
- * Fábrica de um seletor de ROI (retângulo arrastável) sobre um canvas.
+ * Fábrica de um seletor de ROI (retângulo arrastável) sobre um canvas, com zonas de exclusão.
  * Reaproveitada pela aba de Análise e pela aba de Calibração.
+ * Ferramentas: 'roi' (arrastar define a ROI) ou 'exclusao' (arrastar adiciona uma zona de exclusão).
  */
-function criarSeletorROI(canvas, { larguraContainer = 540, tamanhoMinimo = 20, onMudarROI = () => {} } = {}) {
+function criarSeletorROI(canvas, {
+    larguraContainer = 540, tamanhoMinimo = 20, onMudarROI = () => {}, onMudarExclusoes = () => {}
+} = {}) {
     const ctx = canvas.getContext('2d');
     let imgObj = new Image();
     let isDrawing = false;
     let startX = 0, startY = 0;
     let roi = { x: 0, y: 0, w: 0, h: 0 };
     let escalaDisplay = 1.0;
+    let ferramenta = 'roi';
+    let exclusoes = [];          // retângulos em pixels da imagem original
+    let exclusaoEmDesenho = null;
+    const TAMANHO_MIN_EXCLUSAO = 3;
+
+    function desenharExclusao(r, provisoria) {
+        ctx.save();
+        ctx.fillStyle = 'rgba(30, 30, 30, 0.55)';
+        ctx.fillRect(r.x, r.y, r.w, r.h);
+        // Hachura diagonal
+        ctx.beginPath();
+        ctx.rect(r.x, r.y, r.w, r.h);
+        ctx.clip();
+        ctx.strokeStyle = 'rgba(245, 158, 11, 0.8)';
+        ctx.lineWidth = 2;
+        for (let d = -r.h; d < r.w; d += 12) {
+            ctx.moveTo(r.x + d, r.y + r.h);
+            ctx.lineTo(r.x + d + r.h, r.y);
+        }
+        ctx.stroke();
+        ctx.restore();
+        ctx.save();
+        ctx.strokeStyle = '#f59e0b';
+        ctx.lineWidth = 2;
+        ctx.setLineDash(provisoria ? [4, 4] : [8, 4]);
+        ctx.strokeRect(r.x, r.y, r.w, r.h);
+        ctx.restore();
+    }
 
     function configurarCanvas() {
         escalaDisplay = larguraContainer / imgObj.naturalWidth;
@@ -43,6 +74,20 @@ function criarSeletorROI(canvas, { larguraContainer = 540, tamanhoMinimo = 20, o
             ctx.font = 'bold 16px sans-serif';
             ctx.fillText('ROI ATIVA', roi.x + 8, roi.y + 22);
         }
+
+        exclusoes.forEach((r, i) => {
+            desenharExclusao(r, false);
+            ctx.save();
+            ctx.font = 'bold 13px sans-serif';
+            ctx.fillStyle = '#fbbf24';
+            ctx.fillText(`EXCLUÍDA ${i + 1}`, r.x + 4, r.y + 15);
+            ctx.restore();
+        });
+        if (exclusaoEmDesenho) desenharExclusao(exclusaoEmDesenho, true);
+    }
+
+    function retanguloEntre(x0, y0, x1, y1) {
+        return { x: Math.min(x0, x1), y: Math.min(y0, y1), w: Math.abs(x1 - x0), h: Math.abs(y1 - y0) };
     }
 
     function getCanvasCoords(e) {
@@ -59,9 +104,10 @@ function criarSeletorROI(canvas, { larguraContainer = 540, tamanhoMinimo = 20, o
         if (!imgObj.src) return;
         const pt = getCanvasCoords(e);
         isDrawing = true;
-        startX = pt.x;
-        startY = pt.y;
-        roi = { x: startX, y: startY, w: 0, h: 0 };
+        startX = Math.max(0, Math.min(canvas.width, pt.x));
+        startY = Math.max(0, Math.min(canvas.height, pt.y));
+        if (ferramenta === 'exclusao') exclusaoEmDesenho = { x: startX, y: startY, w: 0, h: 0 };
+        else roi = { x: startX, y: startY, w: 0, h: 0 };
     });
 
     canvas.addEventListener('mousemove', (e) => {
@@ -69,22 +115,47 @@ function criarSeletorROI(canvas, { larguraContainer = 540, tamanhoMinimo = 20, o
         const pt = getCanvasCoords(e);
         const curX = Math.max(0, Math.min(canvas.width, pt.x));
         const curY = Math.max(0, Math.min(canvas.height, pt.y));
+        const r = retanguloEntre(startX, startY, curX, curY);
 
-        roi.x = Math.min(startX, curX);
-        roi.y = Math.min(startY, curY);
-        roi.w = Math.abs(curX - startX);
-        roi.h = Math.abs(curY - startY);
-
-        atualizarDesenho();
-        onMudarROI(roi, false);
+        if (ferramenta === 'exclusao') {
+            exclusaoEmDesenho = r;
+            atualizarDesenho();
+        } else {
+            roi = r;
+            atualizarDesenho();
+            onMudarROI(roi, false);
+        }
     });
 
     window.addEventListener('mouseup', () => {
-        if (isDrawing) {
-            isDrawing = false;
+        if (!isDrawing) return;
+        isDrawing = false;
+        if (ferramenta === 'exclusao') {
+            const r = exclusaoEmDesenho;
+            exclusaoEmDesenho = null;
+            if (r && r.w >= TAMANHO_MIN_EXCLUSAO && r.h >= TAMANHO_MIN_EXCLUSAO) {
+                exclusoes.push(r);
+                onMudarExclusoes(exclusoes.slice());
+            }
+            atualizarDesenho();
+        } else {
             onMudarROI(roi, true);
         }
     });
+
+    /** Máscara (1 = excluído) das zonas de exclusão dentro da ROI, ou null se nenhuma a atinge. */
+    function mascaraExclusao(x0, y0, w, h) {
+        const mascara = new Uint8Array(w * h);
+        let algum = false;
+        exclusoes.forEach(r => {
+            const ex0 = Math.max(x0, r.x), ey0 = Math.max(y0, r.y);
+            const ex1 = Math.min(x0 + w, r.x + r.w), ey1 = Math.min(y0 + h, r.y + r.h);
+            for (let y = ey0; y < ey1; y++) {
+                for (let x = ex0; x < ex1; x++) { mascara[(y - y0) * w + (x - x0)] = 1; algum = true; }
+            }
+        });
+        return algum ? mascara : null;
+    }
 
     return {
         carregarImagem(src, aoCarregar) {
@@ -92,10 +163,24 @@ function criarSeletorROI(canvas, { larguraContainer = 540, tamanhoMinimo = 20, o
             imgObj.onload = () => {
                 configurarCanvas();
                 roi = { x: 0, y: 0, w: 0, h: 0 };
+                // Zonas de exclusão valem para uma imagem; uma imagem nova começa sem nenhuma
+                exclusoes = [];
+                onMudarExclusoes([]);
                 atualizarDesenho();
                 if (aoCarregar) aoCarregar(imgObj.naturalWidth, imgObj.naturalHeight);
             };
             imgObj.src = src;
+        },
+        definirFerramenta(f) { ferramenta = f; },
+        removerExclusao(indice) {
+            exclusoes = exclusoes.filter((_, i) => i !== indice);
+            atualizarDesenho();
+            onMudarExclusoes(exclusoes.slice());
+        },
+        limparExclusoes() {
+            exclusoes = [];
+            atualizarDesenho();
+            onMudarExclusoes([]);
         },
         definirROI(novaRoi) {
             roi = novaRoi;
@@ -104,7 +189,10 @@ function criarSeletorROI(canvas, { larguraContainer = 540, tamanhoMinimo = 20, o
         },
         getROI: () => roi,
         roiValida: () => roi.w >= tamanhoMinimo && roi.h >= tamanhoMinimo,
-        /** Pixels RGBA da ROI na resolução original da imagem (sem o desenho da ROI por cima). */
+        /**
+         * Pixels RGBA da ROI na resolução original (sem o desenho da ROI por cima), com
+         * `excluido` = máscara das zonas de exclusão dentro da ROI (ou ausente se não houver).
+         */
         extrairPixelsROI() {
             const w = imgObj.naturalWidth, h = imgObj.naturalHeight;
             const x0 = Math.max(0, roi.x), y0 = Math.max(0, roi.y);
@@ -117,8 +205,46 @@ function criarSeletorROI(canvas, { larguraContainer = 540, tamanhoMinimo = 20, o
             aux.height = y1 - y0;
             const auxCtx = aux.getContext('2d');
             auxCtx.drawImage(imgObj, x0, y0, aux.width, aux.height, 0, 0, aux.width, aux.height);
-            return auxCtx.getImageData(0, 0, aux.width, aux.height);
+            const { data } = auxCtx.getImageData(0, 0, aux.width, aux.height);
+            const excluido = mascaraExclusao(x0, y0, aux.width, aux.height);
+            return excluido
+                ? { data, width: aux.width, height: aux.height, excluido }
+                : { data, width: aux.width, height: aux.height };
         },
+    };
+}
+
+/**
+ * Liga os botões "Selecionar ROI" / "Zona de exclusão" / "Limpar" e a lista de zonas
+ * de um seletor. Retorna a função que redesenha a lista (usada no onMudarExclusoes).
+ */
+function criarControlesExclusao(obterSeletor, { btnRoi, btnExclusao, btnLimpar, lista }) {
+    const el = id => document.getElementById(id);
+
+    function escolher(ferramenta) {
+        obterSeletor().definirFerramenta(ferramenta);
+        el(btnRoi).classList.toggle('ativo', ferramenta === 'roi');
+        el(btnExclusao).classList.toggle('ativo', ferramenta === 'exclusao');
+    }
+    el(btnRoi).addEventListener('click', () => escolher('roi'));
+    el(btnExclusao).addEventListener('click', () => escolher('exclusao'));
+    el(btnLimpar).addEventListener('click', () => obterSeletor().limparExclusoes());
+
+    return function renderizar(exclusoes) {
+        el(btnLimpar).disabled = exclusoes.length === 0;
+        const container = el(lista);
+        container.innerHTML = '';
+        exclusoes.forEach((r, i) => {
+            const chip = document.createElement('span');
+            chip.className = 'chip-exclusao';
+            chip.textContent = `Zona ${i + 1}: ${r.w} × ${r.h} px`;
+            const remover = document.createElement('button');
+            remover.title = 'Remover esta zona';
+            remover.textContent = '✕';
+            remover.addEventListener('click', () => obterSeletor().removerExclusao(i));
+            chip.appendChild(remover);
+            container.appendChild(chip);
+        });
     };
 }
 
@@ -236,7 +362,11 @@ document.addEventListener('DOMContentLoaded', () => {
             roiCoordsLabel.innerText = `ROI: X=${roi.x}, Y=${roi.y}`;
             roiDimsLabel.innerText = `Tamanho: ${roi.w} x ${roi.h} px`;
             if (finalizado && seletor.roiValida()) btnAnalisar.disabled = false;
-        }
+        },
+        onMudarExclusoes: lista => renderizarExclusoes(lista),
+    });
+    const renderizarExclusoes = criarControlesExclusao(() => seletor, {
+        btnRoi: 'ferrROI', btnExclusao: 'ferrExcl', btnLimpar: 'btnLimparExcl', lista: 'listaExcl',
     });
 
     modoLeitura.addEventListener('change', () => {
@@ -320,6 +450,7 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('valMassica').innerText = data.stats.calibrado
             ? data.stats.media_comp_massica + ' %'
             : 'não calibrado';
+        document.getElementById('valExcluido').innerText = data.stats.excluido_pct + ' %';
 
         // Atualiza Imagens
         document.getElementById('imgGrafico').src = data.plot;
@@ -405,7 +536,11 @@ document.addEventListener('DOMContentLoaded', () => {
             calRoiCoords.innerText = `ROI: X=${roi.x}, Y=${roi.y}`;
             calRoiDims.innerText = `Tamanho: ${roi.w} x ${roi.h} px`;
             atualizarEstadoBtnAdicionar();
-        }
+        },
+        onMudarExclusoes: lista => renderizarExclusoesCal(lista),
+    });
+    const renderizarExclusoesCal = criarControlesExclusao(() => seletorCal, {
+        btnRoi: 'calFerrROI', btnExclusao: 'calFerrExcl', btnLimpar: 'calBtnLimparExcl', lista: 'calListaExcl',
     });
 
     function atualizarEstadoBtnAdicionar() {

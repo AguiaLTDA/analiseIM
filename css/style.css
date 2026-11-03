@@ -328,3 +328,54 @@ th {
     color: var(--text-muted);
     font-size: 0.95rem;
 }
+
+/* Ferramentas sobre a imagem: seleção da ROI / zonas de exclusão */
+.ferramentas-roi {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+}
+
+.ferramentas-roi .btn {
+    padding: 7px 12px;
+    font-size: 0.8rem;
+}
+
+.btn-outline.ativo {
+    background: var(--primary);
+    color: white;
+}
+
+.btn-outline.ativo.exclusao {
+    background: #b45309;
+    border-color: #b45309;
+}
+
+.lista-exclusoes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+    font-size: 0.78rem;
+}
+
+.chip-exclusao {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: #fef3c7;
+    color: #92400e;
+    border: 1px solid #f59e0b;
+    border-radius: 999px;
+    padding: 3px 4px 3px 10px;
+}
+
+.chip-exclusao button {
+    border: none;
+    background: transparent;
+    color: #92400e;
+    cursor: pointer;
+    font-weight: 700;
+    padding: 0 6px;
+}
