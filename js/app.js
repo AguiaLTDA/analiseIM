@@ -7,7 +7,8 @@
 /**
  * Fábrica de um seletor de ROI (retângulo arrastável) sobre um canvas, com zonas de exclusão.
  * Reaproveitada pela aba de Análise e pela aba de Calibração.
- * Ferramentas: 'roi' (arrastar define a ROI) ou 'exclusao' (arrastar adiciona uma zona de exclusão).
+ * Ferramentas: 'roi' (arrastar define a ROI) ou 'exclusao' (traçar à mão livre o contorno
+ * de uma zona de exclusão; ao soltar o botão do mouse o contorno se fecha).
  */
 function criarSeletorROI(canvas, {
     larguraContainer = 540, tamanhoMinimo = 20, onMudarROI = () => {}, onMudarExclusoes = () => {}
@@ -19,31 +20,58 @@ function criarSeletorROI(canvas, {
     let roi = { x: 0, y: 0, w: 0, h: 0 };
     let escalaDisplay = 1.0;
     let ferramenta = 'roi';
-    let exclusoes = [];          // retângulos em pixels da imagem original
-    let exclusaoEmDesenho = null;
-    const TAMANHO_MIN_EXCLUSAO = 3;
+    // Zonas de exclusão traçadas à mão livre: { pontos: [[x, y], ...], x, y, w, h (caixa), area },
+    // em pixels da imagem original
+    let exclusoes = [];
+    let tracoEmAndamento = null;  // pontos do traço enquanto o botão do mouse está pressionado
+    const DIST_MIN_PONTOS = 2;    // px entre pontos consecutivos do traço
+    const AREA_MIN_EXCLUSAO = 9;  // px²; traços menores (um clique) são ignorados
 
-    function desenharExclusao(r, provisoria) {
-        ctx.save();
-        ctx.fillStyle = 'rgba(30, 30, 30, 0.55)';
-        ctx.fillRect(r.x, r.y, r.w, r.h);
-        // Hachura diagonal
+    function caminho(pontos, fechar) {
         ctx.beginPath();
-        ctx.rect(r.x, r.y, r.w, r.h);
+        pontos.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+        if (fechar) ctx.closePath();
+    }
+
+    function desenharExclusao(pontos, provisoria) {
+        if (pontos.length < 2) return;
+        const xs = pontos.map(p => p[0]), ys = pontos.map(p => p[1]);
+        const bx = Math.min(...xs), by = Math.min(...ys);
+        const bw = Math.max(...xs) - bx, bh = Math.max(...ys) - by;
+
+        ctx.save();
+        caminho(pontos, true);
+        ctx.fillStyle = provisoria ? 'rgba(30, 30, 30, 0.35)' : 'rgba(30, 30, 30, 0.55)';
+        ctx.fill();
+        // Hachura diagonal recortada pelo contorno
         ctx.clip();
+        ctx.beginPath();
         ctx.strokeStyle = 'rgba(245, 158, 11, 0.8)';
         ctx.lineWidth = 2;
-        for (let d = -r.h; d < r.w; d += 12) {
-            ctx.moveTo(r.x + d, r.y + r.h);
-            ctx.lineTo(r.x + d + r.h, r.y);
+        for (let d = -bh; d < bw; d += 12) {
+            ctx.moveTo(bx + d, by + bh);
+            ctx.lineTo(bx + d + bh, by);
         }
         ctx.stroke();
         ctx.restore();
+
         ctx.save();
         ctx.strokeStyle = '#f59e0b';
         ctx.lineWidth = 2;
-        ctx.setLineDash(provisoria ? [4, 4] : [8, 4]);
-        ctx.strokeRect(r.x, r.y, r.w, r.h);
+        ctx.lineJoin = 'round';
+        if (provisoria) {
+            caminho(pontos, false);  // enquanto desenha: traço aberto + fechamento tracejado
+            ctx.stroke();
+            ctx.setLineDash([4, 4]);
+            ctx.beginPath();
+            ctx.moveTo(...pontos[pontos.length - 1]);
+            ctx.lineTo(...pontos[0]);
+            ctx.stroke();
+        } else {
+            ctx.setLineDash([8, 4]);
+            caminho(pontos, true);
+            ctx.stroke();
+        }
         ctx.restore();
     }
 
@@ -75,19 +103,42 @@ function criarSeletorROI(canvas, {
             ctx.fillText('ROI ATIVA', roi.x + 8, roi.y + 22);
         }
 
-        exclusoes.forEach((r, i) => {
-            desenharExclusao(r, false);
+        exclusoes.forEach((z, i) => {
+            desenharExclusao(z.pontos, false);
             ctx.save();
             ctx.font = 'bold 13px sans-serif';
             ctx.fillStyle = '#fbbf24';
-            ctx.fillText(`EXCLUÍDA ${i + 1}`, r.x + 4, r.y + 15);
+            ctx.strokeStyle = 'rgba(0, 0, 0, 0.7)';
+            ctx.lineWidth = 3;
+            ctx.strokeText(`EXCLUÍDA ${i + 1}`, z.x + 2, Math.max(14, z.y - 4));
+            ctx.fillText(`EXCLUÍDA ${i + 1}`, z.x + 2, Math.max(14, z.y - 4));
             ctx.restore();
         });
-        if (exclusaoEmDesenho) desenharExclusao(exclusaoEmDesenho, true);
+        if (tracoEmAndamento) desenharExclusao(tracoEmAndamento, true);
     }
 
     function retanguloEntre(x0, y0, x1, y1) {
         return { x: Math.min(x0, x1), y: Math.min(y0, y1), w: Math.abs(x1 - x0), h: Math.abs(y1 - y0) };
+    }
+
+    /** Área do polígono (fórmula do laço / shoelace), em px². */
+    function areaPoligono(pontos) {
+        let a = 0;
+        for (let i = 0; i < pontos.length; i++) {
+            const [x1, y1] = pontos[i], [x2, y2] = pontos[(i + 1) % pontos.length];
+            a += x1 * y2 - x2 * y1;
+        }
+        return Math.abs(a) / 2;
+    }
+
+    function criarZona(pontos) {
+        const xs = pontos.map(p => p[0]), ys = pontos.map(p => p[1]);
+        const x = Math.min(...xs), y = Math.min(...ys);
+        return {
+            pontos, x, y,
+            w: Math.max(...xs) - x, h: Math.max(...ys) - y,
+            area: Math.round(areaPoligono(pontos)),
+        };
     }
 
     function getCanvasCoords(e) {
@@ -106,7 +157,7 @@ function criarSeletorROI(canvas, {
         isDrawing = true;
         startX = Math.max(0, Math.min(canvas.width, pt.x));
         startY = Math.max(0, Math.min(canvas.height, pt.y));
-        if (ferramenta === 'exclusao') exclusaoEmDesenho = { x: startX, y: startY, w: 0, h: 0 };
+        if (ferramenta === 'exclusao') tracoEmAndamento = [[startX, startY]];
         else roi = { x: startX, y: startY, w: 0, h: 0 };
     });
 
@@ -115,13 +166,15 @@ function criarSeletorROI(canvas, {
         const pt = getCanvasCoords(e);
         const curX = Math.max(0, Math.min(canvas.width, pt.x));
         const curY = Math.max(0, Math.min(canvas.height, pt.y));
-        const r = retanguloEntre(startX, startY, curX, curY);
 
         if (ferramenta === 'exclusao') {
-            exclusaoEmDesenho = r;
-            atualizarDesenho();
+            const [ux, uy] = tracoEmAndamento[tracoEmAndamento.length - 1];
+            if (Math.hypot(curX - ux, curY - uy) >= DIST_MIN_PONTOS) {
+                tracoEmAndamento.push([curX, curY]);
+                atualizarDesenho();
+            }
         } else {
-            roi = r;
+            roi = retanguloEntre(startX, startY, curX, curY);
             atualizarDesenho();
             onMudarROI(roi, false);
         }
@@ -131,11 +184,15 @@ function criarSeletorROI(canvas, {
         if (!isDrawing) return;
         isDrawing = false;
         if (ferramenta === 'exclusao') {
-            const r = exclusaoEmDesenho;
-            exclusaoEmDesenho = null;
-            if (r && r.w >= TAMANHO_MIN_EXCLUSAO && r.h >= TAMANHO_MIN_EXCLUSAO) {
-                exclusoes.push(r);
-                onMudarExclusoes(exclusoes.slice());
+            // Soltar o botão fecha o contorno (liga o último ponto ao primeiro)
+            const pontos = tracoEmAndamento;
+            tracoEmAndamento = null;
+            if (pontos && pontos.length >= 3) {
+                const zona = criarZona(pontos);
+                if (zona.area >= AREA_MIN_EXCLUSAO) {
+                    exclusoes.push(zona);
+                    onMudarExclusoes(exclusoes.slice());
+                }
             }
             atualizarDesenho();
         } else {
@@ -145,15 +202,28 @@ function criarSeletorROI(canvas, {
 
     /** Máscara (1 = excluído) das zonas de exclusão dentro da ROI, ou null se nenhuma a atinge. */
     function mascaraExclusao(x0, y0, w, h) {
+        const atingem = exclusoes.filter(z => z.x < x0 + w && z.x + z.w > x0 && z.y < y0 + h && z.y + z.h > y0);
+        if (!atingem.length) return null;
+
+        // Rasteriza os contornos num canvas do tamanho da ROI (pixel excluído se ficar mais da metade dentro)
+        const aux = document.createElement('canvas');
+        aux.width = w;
+        aux.height = h;
+        const auxCtx = aux.getContext('2d');
+        auxCtx.translate(-x0, -y0);
+        auxCtx.fillStyle = '#000';
+        atingem.forEach(z => {
+            auxCtx.beginPath();
+            z.pontos.forEach(([x, y], i) => (i ? auxCtx.lineTo(x, y) : auxCtx.moveTo(x, y)));
+            auxCtx.closePath();
+            auxCtx.fill();
+        });
+        const alfa = auxCtx.getImageData(0, 0, w, h).data;
         const mascara = new Uint8Array(w * h);
         let algum = false;
-        exclusoes.forEach(r => {
-            const ex0 = Math.max(x0, r.x), ey0 = Math.max(y0, r.y);
-            const ex1 = Math.min(x0 + w, r.x + r.w), ey1 = Math.min(y0 + h, r.y + r.h);
-            for (let y = ey0; y < ey1; y++) {
-                for (let x = ex0; x < ex1; x++) { mascara[(y - y0) * w + (x - x0)] = 1; algum = true; }
-            }
-        });
+        for (let i = 0; i < w * h; i++) {
+            if (alfa[i * 4 + 3] >= 128) { mascara[i] = 1; algum = true; }
+        }
         return algum ? mascara : null;
     }
 
@@ -237,7 +307,7 @@ function criarControlesExclusao(obterSeletor, { btnRoi, btnExclusao, btnLimpar, 
         exclusoes.forEach((r, i) => {
             const chip = document.createElement('span');
             chip.className = 'chip-exclusao';
-            chip.textContent = `Zona ${i + 1}: ${r.w} × ${r.h} px`;
+            chip.textContent = `Zona ${i + 1}: ${r.area.toLocaleString('pt-BR')} px²`;
             const remover = document.createElement('button');
             remover.title = 'Remover esta zona';
             remover.textContent = '✕';
