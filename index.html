@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Análise de Mistura em Leito Fluidizado | CEUNES / UFES</title>
-    <link rel="icon" type="image/svg+xml" href="/static/img/favicon.svg">
-    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="icon" type="image/svg+xml" href="img/favicon.svg">
+    <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
 
@@ -205,6 +205,20 @@
                 </button>
             </div>
 
+            <div class="controls-row" style="margin-top: 10px; margin-bottom: 0;">
+                <button class="btn btn-outline" id="btnCalExportar" style="flex: 1; justify-content: center;">
+                    💾 Exportar Calibração
+                </button>
+                <input type="file" id="calInputImportar" accept="application/json,.json" style="display: none;">
+                <button class="btn btn-outline" style="flex: 1; justify-content: center;" onclick="document.getElementById('calInputImportar').click()">
+                    📂 Importar Calibração
+                </button>
+            </div>
+            <p style="color: var(--text-muted); font-size: 0.78rem; margin-top: 8px;">
+                A calibração fica salva neste navegador. Exporte o arquivo para guardar uma cópia
+                ou usar a mesma curva em outro computador.
+            </p>
+
             <div id="calResultado" style="margin-top: 18px; display: none;">
                 <div class="stats-grid" style="grid-template-columns: repeat(2, 1fr);">
                     <div class="stat-card">
@@ -231,7 +245,8 @@
         </div>
     </div>
 
-    <!-- Script JavaScript Modular -->
-    <script src="/static/js/app.js"></script>
+    <!-- Scripts: núcleo de cálculo (roda no navegador) + interface -->
+    <script src="js/analise.js"></script>
+    <script src="js/app.js"></script>
 </body>
 </html>

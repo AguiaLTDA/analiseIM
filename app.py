@@ -34,6 +34,7 @@ CALIBRACAO_PATH = BASE_DIR / "calibracao.json"
 
 # Parâmetros da análise
 N_CLUSTERS = 3                 # compósito, areia, gás
+KMEANS_TENTATIVAS = 20         # inicializações do K-Means (menos que isso o resultado oscila entre soluções)
 DELTA_L_MIN_GAS = 10.0         # separação mínima de luminosidade (L*) para aceitar um cluster de gás
 JANELA_SUAVIZACAO_MM = 2.0     # altura da janela móvel do perfil C(z)
 FRACAO_SOLIDOS_MIN = 0.20      # abaixo disso a cota é considerada sem leito (C = null)
@@ -59,6 +60,8 @@ app = FastAPI(title="Análise de Mistura em Leito Fluidizado - CEUNES/UFES")
 
 for sub in ("css", "js", "img"):
     if (STATIC_DIR / sub).is_dir():
+        # O index.html usa caminhos relativos (compatível com o GitHub Pages); /static/... mantido por compatibilidade
+        app.mount(f"/{sub}", StaticFiles(directory=STATIC_DIR / sub), name=sub)
         app.mount(f"/static/{sub}", StaticFiles(directory=STATIC_DIR / sub), name=f"static_{sub}")
 
 
@@ -298,7 +301,7 @@ def segmentar_fases(roi_bgr: np.ndarray) -> np.ndarray:
 
     cv2.setRNGSeed(42)  # resultados reprodutíveis
     criterios = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 50, 0.5)
-    _, rotulos, centros = cv2.kmeans(lab, N_CLUSTERS, None, criterios, 5, cv2.KMEANS_PP_CENTERS)
+    _, rotulos, centros = cv2.kmeans(lab, N_CLUSTERS, None, criterios, KMEANS_TENTATIVAS, cv2.KMEANS_PP_CENTERS)
     rotulos = rotulos.ravel()
 
     # L* do OpenCV vai de 0 a 255; converte para a escala 0-100

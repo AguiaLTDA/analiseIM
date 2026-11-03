@@ -6,6 +6,27 @@
 
 ---
 
+## 🌐 Versão online (GitHub Pages) — sem servidor
+
+A análise roda **inteira no navegador**, em [`js/analise.js`](js/analise.js) (porta em JavaScript do cálculo do `app.py`:
+K-Means em CIELAB, modo UV, perfil C(z), Índice de Lacey e curva de calibração). Por isso o app funciona
+como site estático no GitHub Pages, de graça, e as imagens analisadas não saem do computador do usuário.
+
+**Publicar:** no GitHub, *Settings → Pages → Build and deployment*: *Source* = **Deploy from a branch**,
+*Branch* = **main** / **(root)**. O site fica em `https://aguialtda.github.io/analiseIM/`.
+
+**Calibração:** fica salva no navegador de quem calibrou. Use **Exportar Calibração** para guardar o arquivo
+`.json` e **Importar Calibração** para levar a mesma curva a outro computador ou navegador.
+
+**Testar localmente:** o `index.html` precisa ser aberto por um servidor (clicar duas vezes no arquivo bloqueia a
+leitura dos pixels). Qualquer servidor estático serve, por exemplo `python -m http.server` na pasta do projeto,
+ou o próprio `app.py`.
+
+O `app.py` continua no repositório como referência e para uso local; ele não é necessário para o site.
+As seções abaixo descrevem a versão original com servidor.
+
+---
+
 ## 📂 Arquitetura de Diretórios
 
 ```text

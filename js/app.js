@@ -1,6 +1,7 @@
 /**
  * ANÁLISE DE MISTURA EM LEITO FLUIDIZADO - CEUNES / UFES
- * Script Frontend: Manipulação do Canvas de ROI, Chamadas à API e Download de CSV
+ * Script Frontend: Canvas de ROI, análise no próprio navegador (js/analise.js),
+ * calibração salva no navegador (com exportação/importação) e download de CSV.
  */
 
 /**
@@ -103,8 +104,107 @@ function criarSeletorROI(canvas, { larguraContainer = 540, tamanhoMinimo = 20, o
         },
         getROI: () => roi,
         roiValida: () => roi.w >= tamanhoMinimo && roi.h >= tamanhoMinimo,
+        /** Pixels RGBA da ROI na resolução original da imagem (sem o desenho da ROI por cima). */
+        extrairPixelsROI() {
+            const w = imgObj.naturalWidth, h = imgObj.naturalHeight;
+            const x0 = Math.max(0, roi.x), y0 = Math.max(0, roi.y);
+            const x1 = Math.min(w, roi.x + roi.w), y1 = Math.min(h, roi.y + roi.h);
+            if (x1 - x0 < tamanhoMinimo || y1 - y0 < tamanhoMinimo) {
+                throw new Error('ROI muito pequena ou fora da imagem.');
+            }
+            const aux = document.createElement('canvas');
+            aux.width = x1 - x0;
+            aux.height = y1 - y0;
+            const auxCtx = aux.getContext('2d');
+            auxCtx.drawImage(imgObj, x0, y0, aux.width, aux.height, 0, 0, aux.width, aux.height);
+            return auxCtx.getImageData(0, 0, aux.width, aux.height);
+        },
     };
 }
+
+/** Executa um cálculo pesado depois de o navegador desenhar o indicador de carregamento. */
+function executarDepoisDePintar(fn) {
+    return new Promise((resolve, reject) => {
+        let executado = false;
+        const executar = () => {
+            if (executado) return;
+            executado = true;
+            try { resolve(fn()); } catch (err) { reject(err); }
+        };
+        // requestAnimationFrame fica pausado com a aba em segundo plano; o temporizador garante a execução
+        requestAnimationFrame(() => setTimeout(executar, 0));
+        setTimeout(executar, 100);
+    });
+}
+
+function mensagemErro(err) {
+    // Canvas "contaminado": acontece ao abrir o index.html direto do disco (file://)
+    if (err && err.name === 'SecurityError') {
+        return 'o navegador bloqueou a leitura dos pixels. Abra o app pelo endereço do GitHub Pages ' +
+               'ou por um servidor local, não clicando duas vezes no index.html.';
+    }
+    return err && err.message ? err.message : String(err);
+}
+
+function baixarArquivo(conteudo, nome, tipo) {
+    const blob = new Blob([conteudo], { type: tipo });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = nome;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/**
+ * Calibração salva no navegador (localStorage), separada por modo de leitura.
+ * Se o armazenamento estiver bloqueado (janela anônima etc.), fica só na memória desta aba.
+ */
+const Calibracao = (() => {
+    const CHAVE = 'analiseIM.calibracao.v1';
+    let memoria = null;
+
+    function normalizar(dados) {
+        const out = {};
+        Analise.MODOS.forEach(modo => {
+            const d = (dados && dados[modo]) || {};
+            out[modo] = { pontos: Array.isArray(d.pontos) ? d.pontos : [], coef: d.coef || null };
+        });
+        return out;
+    }
+
+    function carregar() {
+        try {
+            const bruto = localStorage.getItem(CHAVE);
+            if (bruto) return normalizar(JSON.parse(bruto));
+        } catch (e) { /* armazenamento indisponível */ }
+        return normalizar(memoria);
+    }
+
+    function salvar(dados) {
+        memoria = dados;
+        try { localStorage.setItem(CHAVE, JSON.stringify(dados)); } catch (e) { /* fica só na memória */ }
+    }
+
+    /** Valida um arquivo exportado (ou o formato do antigo calibracao.json do servidor). */
+    function validarImportacao(json) {
+        const dados = json && json.dados ? json.dados : json;
+        if (!dados || typeof dados !== 'object') throw new Error('arquivo sem dados de calibração.');
+        const modosPresentes = Analise.MODOS.filter(m => dados[m]);
+        if (!modosPresentes.length) throw new Error('nenhum modo de leitura encontrado no arquivo.');
+        modosPresentes.forEach(m => {
+            const pontos = dados[m].pontos || [];
+            if (!Array.isArray(pontos) || pontos.some(p => typeof p.x !== 'number' || typeof p.y !== 'number')) {
+                throw new Error(`pontos inválidos no modo "${m}".`);
+            }
+        });
+        return normalizar(dados);
+    }
+
+    return { carregar, salvar, validarImportacao };
+})();
 
 document.addEventListener('DOMContentLoaded', () => {
     // -----------------------------------------------------------------
@@ -129,8 +229,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const btnDownloadCSV = document.getElementById('btnDownloadCSV');
     const modoLeitura = document.getElementById('modoLeitura');
 
-    let currentFile = null;
-    let isUsingSample = true;
     let resultadoGlobal = null;
 
     const seletor = criarSeletorROI(document.getElementById('mainCanvas'), {
@@ -150,25 +248,16 @@ document.addEventListener('DOMContentLoaded', () => {
     carregarImagemPadrao();
 
     function carregarImagemPadrao() {
-        fetch('/api/imagem_exemplo')
-            .then(r => r.json())
-            .then(data => {
-                seletor.carregarImagem('data:image/jpeg;base64,' + data.imagem_base64, (w, h) => {
-                    // Define ROI inicial padrão bem ajustada ao leito
-                    seletor.definirROI({
-                        x: Math.round(w * 0.38),
-                        y: Math.round(h * 0.32),
-                        w: Math.round(w * 0.30),
-                        h: Math.round(h * 0.40)
-                    });
-                    btnAnalisar.disabled = false;
-                });
-                isUsingSample = true;
-                currentFile = null;
-            })
-            .catch(err => {
-                console.error("Erro ao carregar imagem padrão:", err);
+        seletor.carregarImagem('img/frame_exemplo.jpg', (w, h) => {
+            // Define ROI inicial padrão bem ajustada ao leito
+            seletor.definirROI({
+                x: Math.round(w * 0.38),
+                y: Math.round(h * 0.32),
+                w: Math.round(w * 0.30),
+                h: Math.round(h * 0.40)
             });
+            btnAnalisar.disabled = false;
+        });
     }
 
     btnCarregarExemplo.addEventListener('click', carregarImagemPadrao);
@@ -176,8 +265,6 @@ document.addEventListener('DOMContentLoaded', () => {
     inputArquivo.addEventListener('change', (e) => {
         const file = e.target.files[0];
         if (!file) return;
-        currentFile = file;
-        isUsingSample = false;
         const reader = new FileReader();
         reader.onload = (event) => {
             seletor.carregarImagem(event.target.result, () => {
@@ -189,9 +276,8 @@ document.addEventListener('DOMContentLoaded', () => {
         reader.readAsDataURL(file);
     });
 
-    // Envio para o Backend FastAPI e Processamento
+    // Análise executada no próprio navegador
     btnAnalisar.addEventListener('click', () => {
-        const roi = seletor.getROI();
         if (!seletor.roiValida()) return;
 
         document.getElementById('loadingSpinner').style.display = 'block';
@@ -200,33 +286,24 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('imgSegmentada').style.display = 'none';
         btnAnalisar.disabled = true;
 
-        const formData = new FormData();
-        formData.append('x', roi.x);
-        formData.append('y', roi.y);
-        formData.append('width', roi.w);
-        formData.append('height', roi.h);
-        formData.append('largura_mm', document.getElementById('colLargura').value);
-        formData.append('usar_exemplo', isUsingSample);
-        formData.append('modo', modoLeitura.value);
+        const modo = modoLeitura.value;
+        const larguraMm = parseFloat(document.getElementById('colLargura').value);
 
-        if (!isUsingSample && currentFile) {
-            formData.append('arquivo', currentFile);
-        }
-
-        fetch('/api/analisar_roi', {
-            method: 'POST',
-            body: formData
+        executarDepoisDePintar(() => {
+            const pixels = seletor.extrairPixelsROI();
+            const coef = Calibracao.carregar()[modo].coef;
+            const resultado = Analise.analisarROI(pixels, larguraMm, modo, coef);
+            resultado.plot = Analise.gerarGrafico(resultado.perfil, resultado.stats);
+            resultado.overlay = Analise.gerarOverlay(pixels, resultado.seg);
+            return resultado;
         })
-        .then(r => {
-            if (!r.ok) throw new Error('Erro na resposta do servidor.');
-            return r.json();
-        })
-        .then(data => {
-            resultadoGlobal = data;
-            exibirResultados(data);
+        .then(resultado => {
+            resultadoGlobal = resultado;
+            exibirResultados(resultado);
         })
         .catch(err => {
-            alert('Falha na análise da ROI: ' + err.message);
+            document.getElementById('placeholderMsg').style.display = 'block';
+            alert('Falha na análise da ROI: ' + mensagemErro(err));
         })
         .finally(() => {
             document.getElementById('loadingSpinner').style.display = 'none';
@@ -238,24 +315,25 @@ document.addEventListener('DOMContentLoaded', () => {
         // Atualiza Cards de Métricas
         document.getElementById('valMedia').innerText = data.stats.media_comp + ' %';
         document.getElementById('valDesvio').innerText = data.stats.desvio_comp + ' %';
-        document.getElementById('valLacey').innerText = data.stats.lacey_index;
+        document.getElementById('valLacey').innerText = data.stats.lacey_index !== null ? data.stats.lacey_index : 'n/d';
         document.getElementById('valAltura').innerText = data.stats.altura_total_mm + ' mm';
         document.getElementById('valMassica').innerText = data.stats.calibrado
             ? data.stats.media_comp_massica + ' %'
             : 'não calibrado';
 
         // Atualiza Imagens
-        const imgG = document.getElementById('imgGrafico');
-        const imgS = document.getElementById('imgSegmentada');
-        imgG.src = 'data:image/png;base64,' + data.plot_b64;
-        imgS.src = 'data:image/jpeg;base64,' + data.seg_overlay_b64;
+        document.getElementById('imgGrafico').src = data.plot;
+        document.getElementById('imgSegmentada').src = data.overlay;
 
         alternarAba('grafico');
 
         // Preenche Tabela
         const corpo = document.getElementById('tabelaCorpo');
         corpo.innerHTML = '';
-        data.perfil.forEach(row => {
+        if (!data.tabela.length) {
+            corpo.innerHTML = '<tr><td colspan="4" style="color: var(--text-muted);">Nenhuma cota com leito identificada na ROI.</td></tr>';
+        }
+        data.tabela.forEach(row => {
             const massico = row.c_pct_massico !== null && row.c_pct_massico !== undefined
                 ? row.c_pct_massico.toFixed(2) + '%' : '-';
             const tr = document.createElement('tr');
@@ -299,17 +377,10 @@ document.addEventListener('DOMContentLoaded', () => {
         for (let i = 0; i < full.z_mm.length; i++) {
             const c = full.c_pct[i] !== null ? full.c_pct[i] : '';
             const m = full.c_pct_massico[i] !== null ? full.c_pct_massico[i] : '';
-            csvContent += `${full.z_mm[i]};${c};${m};${full.gas_pct[i]}\n`;
+            const g = full.gas_pct[i] !== null ? full.gas_pct[i] : '';
+            csvContent += `${full.z_mm[i]};${c};${m};${g}\n`;
         }
-
-        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'perfil_roi_concentracao.csv';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
+        baixarArquivo(csvContent, 'perfil_roi_concentracao.csv', 'text/csv;charset=utf-8;');
     });
 
     // -----------------------------------------------------------------
@@ -324,11 +395,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const btnCalAjustar = document.getElementById('btnCalAjustar');
     const calTabelaPontos = document.getElementById('calTabelaPontos');
     const calModoLabel = document.getElementById('calModoLabel');
+    const btnCalExportar = document.getElementById('btnCalExportar');
+    const calInputImportar = document.getElementById('calInputImportar');
 
-    let calArquivo = null;
+    let calImagemCarregada = false;
 
     const seletorCal = criarSeletorROI(document.getElementById('calCanvas'), {
-        onMudarROI(roi, finalizado) {
+        onMudarROI(roi) {
             calRoiCoords.innerText = `ROI: X=${roi.x}, Y=${roi.y}`;
             calRoiDims.innerText = `Tamanho: ${roi.w} x ${roi.h} px`;
             atualizarEstadoBtnAdicionar();
@@ -336,8 +409,9 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     function atualizarEstadoBtnAdicionar() {
-        const fracaoOk = calFracaoReal.value !== '' && !isNaN(parseFloat(calFracaoReal.value));
-        btnCalAdicionar.disabled = !(calArquivo && seletorCal.roiValida() && fracaoOk);
+        const fracao = parseFloat(calFracaoReal.value);
+        const fracaoOk = calFracaoReal.value !== '' && !isNaN(fracao);
+        btnCalAdicionar.disabled = !(calImagemCarregada && seletorCal.roiValida() && fracaoOk);
     }
 
     calFracaoReal.addEventListener('input', atualizarEstadoBtnAdicionar);
@@ -345,10 +419,10 @@ document.addEventListener('DOMContentLoaded', () => {
     calInputArquivo.addEventListener('change', (e) => {
         const file = e.target.files[0];
         if (!file) return;
-        calArquivo = file;
         const reader = new FileReader();
         reader.onload = (event) => {
             seletorCal.carregarImagem(event.target.result, () => {
+                calImagemCarregada = true;
                 calRoiCoords.innerText = 'ROI: Arraste o mouse na imagem para selecionar';
                 calRoiDims.innerText = 'Tamanho: 0 x 0 px';
                 atualizarEstadoBtnAdicionar();
@@ -362,38 +436,47 @@ document.addEventListener('DOMContentLoaded', () => {
         carregarPontosCalibracao();
     });
 
+    /**
+     * Grava os pontos de um modo. Se já havia curva ajustada, ela é recalculada com os
+     * pontos atuais (ou descartada se sobrarem menos de 3), para nunca ficar desatualizada.
+     */
+    function atualizarPontos(modo, pontos) {
+        const dados = Calibracao.carregar();
+        dados[modo].pontos = pontos;
+        if (dados[modo].coef) {
+            dados[modo].coef = pontos.length >= Analise.MIN_PONTOS_AJUSTE ? Analise.ajustarCurva(pontos) : null;
+        }
+        Calibracao.salvar(dados);
+        renderizarPontosCalibracao(dados[modo].pontos, dados[modo].coef);
+    }
+
     btnCalAdicionar.addEventListener('click', () => {
-        const roi = seletorCal.getROI();
-        if (!seletorCal.roiValida() || !calArquivo) return;
+        if (!seletorCal.roiValida() || !calImagemCarregada) return;
+        const fracaoReal = parseFloat(calFracaoReal.value);
+        if (!(fracaoReal >= 0 && fracaoReal <= 100)) {
+            alert('A fração mássica real deve estar entre 0 e 100%.');
+            return;
+        }
         btnCalAdicionar.disabled = true;
+        const modo = calModo.value;
 
-        const formData = new FormData();
-        formData.append('x', roi.x);
-        formData.append('y', roi.y);
-        formData.append('width', roi.w);
-        formData.append('height', roi.h);
-        formData.append('modo', calModo.value);
-        formData.append('fracao_massica_real', calFracaoReal.value);
-        formData.append('arquivo', calArquivo);
-
-        fetch('/api/calibracao/pontos', { method: 'POST', body: formData })
-            .then(r => {
-                if (!r.ok) return r.json().then(d => { throw new Error(d.detail || 'Erro ao adicionar ponto.'); });
-                return r.json();
-            })
-            .then(data => {
-                renderizarPontosCalibracao(data.pontos, data.coef);
+        executarDepoisDePintar(() => Analise.medirFracaoHomogenea(seletorCal.extrairPixelsROI(), modo))
+            .then(cMedido => {
+                const pontos = Calibracao.carregar()[modo].pontos.concat({
+                    x: Math.round(cMedido * 1000) / 1000,
+                    y: Math.round(fracaoReal * 1000) / 1000,
+                    criado_em: new Date().toISOString().slice(0, 19) + '+00:00',
+                });
+                atualizarPontos(modo, pontos);
                 calFracaoReal.value = '';
             })
-            .catch(err => alert('Falha ao adicionar ponto de calibração: ' + err.message))
+            .catch(err => alert('Falha ao adicionar ponto de calibração: ' + mensagemErro(err)))
             .finally(() => atualizarEstadoBtnAdicionar());
     });
 
     function carregarPontosCalibracao() {
-        fetch(`/api/calibracao/pontos?modo=${calModo.value}`)
-            .then(r => r.json())
-            .then(data => renderizarPontosCalibracao(data.pontos, data.coef))
-            .catch(err => console.error('Erro ao carregar pontos de calibração:', err));
+        const dados = Calibracao.carregar()[calModo.value];
+        renderizarPontosCalibracao(dados.pontos, dados.coef);
     }
 
     function renderizarPontosCalibracao(pontos, coef) {
@@ -415,36 +498,29 @@ document.addEventListener('DOMContentLoaded', () => {
                 btn.addEventListener('click', () => removerPontoCalibracao(parseInt(btn.dataset.indice, 10)));
             });
         }
-        btnCalAjustar.disabled = pontos.length < 3;
-        exibirCoefCalibracao(coef);
+        btnCalAjustar.disabled = pontos.length < Analise.MIN_PONTOS_AJUSTE;
+        exibirCoefCalibracao(coef, pontos);
     }
 
     function removerPontoCalibracao(indice) {
-        fetch(`/api/calibracao/pontos?modo=${calModo.value}&indice=${indice}`, { method: 'DELETE' })
-            .then(r => r.json())
-            .then(data => renderizarPontosCalibracao(data.pontos, data.coef))
-            .catch(err => alert('Falha ao remover ponto: ' + err.message));
+        const modo = calModo.value;
+        const pontos = Calibracao.carregar()[modo].pontos.filter((_, i) => i !== indice);
+        atualizarPontos(modo, pontos);
     }
 
     btnCalAjustar.addEventListener('click', () => {
-        btnCalAjustar.disabled = true;
-        const formData = new FormData();
-        formData.append('modo', calModo.value);
-        fetch('/api/calibracao/ajustar', { method: 'POST', body: formData })
-            .then(r => {
-                if (!r.ok) return r.json().then(d => { throw new Error(d.detail || 'Erro ao ajustar a curva.'); });
-                return r.json();
-            })
-            .then(data => {
-                exibirCoefCalibracao(data.coef);
-                document.getElementById('calGrafico').src = 'data:image/png;base64,' + data.grafico_b64;
-                document.getElementById('calResultado').style.display = 'block';
-            })
-            .catch(err => alert('Falha ao calcular a calibração: ' + err.message))
-            .finally(() => { btnCalAjustar.disabled = false; });
+        const modo = calModo.value;
+        const dados = Calibracao.carregar();
+        try {
+            dados[modo].coef = Analise.ajustarCurva(dados[modo].pontos);
+            Calibracao.salvar(dados);
+            exibirCoefCalibracao(dados[modo].coef, dados[modo].pontos);
+        } catch (err) {
+            alert('Falha ao calcular a calibração: ' + mensagemErro(err));
+        }
     });
 
-    function exibirCoefCalibracao(coef) {
+    function exibirCoefCalibracao(coef, pontos) {
         if (!coef) {
             document.getElementById('calResultado').style.display = 'none';
             return;
@@ -453,8 +529,39 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('calR2').innerText = coef.r2 !== null ? coef.r2 : '-';
         document.getElementById('calLD').innerText = coef.ld !== null ? coef.ld + ' %' : '-';
         document.getElementById('calLQ').innerText = coef.lq !== null ? coef.lq + ' %' : '-';
+        document.getElementById('calGrafico').src = Analise.gerarGraficoCalibracao(pontos, coef, calModo.value);
         document.getElementById('calResultado').style.display = 'block';
     }
+
+    // Exportar / importar a calibração (para levar a outro computador ou guardar cópia)
+    btnCalExportar.addEventListener('click', () => {
+        const arquivo = {
+            app: 'analiseIM',
+            versao: 1,
+            exportado_em: new Date().toISOString(),
+            dados: Calibracao.carregar(),
+        };
+        baixarArquivo(JSON.stringify(arquivo, null, 2), 'calibracao_analiseIM.json', 'application/json');
+    });
+
+    calInputImportar.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        e.target.value = '';
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            try {
+                const dados = Calibracao.validarImportacao(JSON.parse(event.target.result));
+                const resumo = Analise.MODOS.map(m => `${m}: ${dados[m].pontos.length} ponto(s)`).join(', ');
+                if (!confirm(`Substituir a calibração deste navegador pela do arquivo?\n(${resumo})`)) return;
+                Calibracao.salvar(dados);
+                carregarPontosCalibracao();
+            } catch (err) {
+                alert('Arquivo de calibração inválido: ' + mensagemErro(err));
+            }
+        };
+        reader.readAsText(file);
+    });
 
     calModoLabel.innerText = calModo.value === 'uv' ? 'Fluorescência UV' : 'Luminosidade';
 });
