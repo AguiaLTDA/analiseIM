@@ -18,7 +18,8 @@ como site estático no GitHub Pages, de graça, e as imagens analisadas não sae
 **Calibração:** fica salva no navegador de quem calibrou. Use **Exportar Calibração** para guardar o arquivo
 `.json` e **Importar Calibração** para levar a mesma curva a outro computador ou navegador.
 
-**Base de referências (modo supervisionado):** na aba *Base de Referências*, pinte sobre fotos de referência
+**Base de referências (modo supervisionado):** na aba *Base de Referências*, envie uma foto de referência,
+arraste para selecionar o quadro que servirá de referência (como na ROI; ele abre ampliado) e pinte nele
 regiões de PEBD, areia e gás/fundo. O app guarda uma amostra das cores (CIELAB) de cada classe, ajusta uma
 gaussiana por classe (QDA) e mostra a matriz de confusão (validação deixando uma foto de fora quando há duas
 ou mais). No modo de leitura *Base de referências*, cada pixel vai para a classe mais provável; pixels longe

@@ -11,7 +11,8 @@
  * de uma zona de exclusão; ao soltar o botão do mouse o contorno se fecha).
  */
 function criarSeletorROI(canvas, {
-    larguraContainer = 540, tamanhoMinimo = 20, onMudarROI = () => {}, onMudarExclusoes = () => {}
+    larguraContainer = 540, tamanhoMinimo = 20, onMudarROI = () => {}, onMudarExclusoes = () => {},
+    rotuloROI = 'ROI ATIVA',
 } = {}) {
     const ctx = canvas.getContext('2d');
     let imgObj = new Image();
@@ -100,7 +101,7 @@ function criarSeletorROI(canvas, {
 
             ctx.fillStyle = '#ef4444';
             ctx.font = 'bold 16px sans-serif';
-            ctx.fillText('ROI ATIVA', roi.x + 8, roi.y + 22);
+            ctx.fillText(rotuloROI, roi.x + 8, roi.y + 22);
         }
 
         exclusoes.forEach((z, i) => {
@@ -323,7 +324,7 @@ function criarControlesExclusao(obterSeletor, { btnRoi, btnExclusao, btnLimpar, 
  * Classe 1 = PEBD, 2 = areia, 3 = gás/fundo, 0 = borracha; ferramentas 'pincel' ou 'retangulo'.
  * Os rótulos ficam num Uint8Array do tamanho da imagem original (0 = sem marca, fase + 1).
  */
-function criarPintorRotulos(canvas, { larguraContainer = 540, onMudar = () => {} } = {}) {
+function criarPintorRotulos(canvas, { larguraContainer = 540, alturaMaxima = 720, ampliacaoMaxima = 8, onMudar = () => {} } = {}) {
     const ctx = canvas.getContext('2d');
     const CORES = { 1: [239, 68, 68], 2: [250, 204, 21], 3: [59, 130, 246] };
     let imgObj = null, rotulos = null, overlay = null, overlayCtx = null;
@@ -441,26 +442,34 @@ function criarPintorRotulos(canvas, { larguraContainer = 540, onMudar = () => {}
     });
 
     return {
-        carregarImagem(src, aoCarregar) {
-            const novo = new Image();
-            novo.onload = () => {
+        /**
+         * `fonte`: endereço de imagem ou um canvas (o quadro recortado). Quadros pequenos são
+         * ampliados para caber na largura do painel (até `ampliacaoMaxima`); altos, limitados em altura.
+         */
+        carregarImagem(fonte, aoCarregar) {
+            const usar = (novo, w, h) => {
                 imgObj = novo;
-                canvas.width = novo.naturalWidth;
-                canvas.height = novo.naturalHeight;
-                escala = larguraContainer / novo.naturalWidth;
-                canvas.style.width = (novo.naturalWidth * escala) + 'px';
-                canvas.style.height = (novo.naturalHeight * escala) + 'px';
+                canvas.width = w;
+                canvas.height = h;
+                escala = Math.min(larguraContainer / w, alturaMaxima / h, ampliacaoMaxima);
+                canvas.style.width = (w * escala) + 'px';
+                canvas.style.height = (h * escala) + 'px';
+                // Ampliado, o pixel aparece como bloco (sem suavizar), para marcar com precisão
+                canvas.style.imageRendering = escala > 1.5 ? 'pixelated' : 'auto';
                 overlay = document.createElement('canvas');
-                overlay.width = novo.naturalWidth;
-                overlay.height = novo.naturalHeight;
+                overlay.width = w;
+                overlay.height = h;
                 overlayCtx = overlay.getContext('2d');
-                rotulos = new Uint8Array(novo.naturalWidth * novo.naturalHeight);
+                rotulos = new Uint8Array(w * h);
                 contagem = [rotulos.length, 0, 0, 0];
                 desenhar();
                 onMudar(contagem.slice());
                 if (aoCarregar) aoCarregar();
             };
-            novo.src = src;
+            if (fonte instanceof HTMLCanvasElement) { usar(fonte, fonte.width, fonte.height); return; }
+            const novo = new Image();
+            novo.onload = () => usar(novo, novo.naturalWidth, novo.naturalHeight);
+            novo.src = fonte;
         },
         definirClasse(c) { classe = c; },
         definirFerramenta(f) { ferramenta = f; },
@@ -1045,6 +1054,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const btnRefLimparMarcas = document.getElementById('btnRefLimparMarcas');
     const refRaio = document.getElementById('refRaio');
     let refNomeFoto = '';
+    let refQuadro = null;          // {x, y, w, h} do quadro em uso, em pixels da foto original
+    let refTamanhoFoto = null;
     const NOMES_CLASSES = ['PEBD', 'Areia', 'Gás / fundo'];
 
     const pintor = criarPintorRotulos(document.getElementById('refCanvas'), {
@@ -1070,14 +1081,77 @@ document.addEventListener('DOMContentLoaded', () => {
         pintor.definirRaio(parseInt(refRaio.value, 10));
     });
 
+    // Etapa 1: selecionar o quadro de referência (arrastar, como a ROI). Etapa 2: pintar nele.
+    const refQuadroCanvas = document.getElementById('refQuadroCanvas');
+    const refCanvas = document.getElementById('refCanvas');
+    const btnRefUsarQuadro = document.getElementById('btnRefUsarQuadro');
+
+    const seletorQuadro = criarSeletorROI(refQuadroCanvas, {
+        rotuloROI: 'QUADRO DE REFERÊNCIA',
+        onMudarROI(roi, finalizado) {
+            refContagem.innerText = `Quadro: X=${roi.x}, Y=${roi.y} · ${roi.w} x ${roi.h} px`;
+            if (finalizado) btnRefUsarQuadro.disabled = !seletorQuadro.roiValida();
+        },
+    });
+
+    function mostrarEtapaRef(etapa) {
+        refQuadroCanvas.style.display = etapa === 'quadro' ? 'block' : 'none';
+        refCanvas.style.display = etapa === 'pintura' ? 'block' : 'none';
+        document.getElementById('refFerrQuadro').style.display = etapa === 'quadro' ? 'flex' : 'none';
+        document.getElementById('refFerrPintura').style.display = etapa === 'pintura' ? 'flex' : 'none';
+    }
+
+    function temMarcacoes() {
+        return refCanvas.style.display !== 'none' && !btnRefLimparMarcas.disabled;
+    }
+
+    function abrirSelecaoQuadro() {
+        mostrarEtapaRef('quadro');
+        const roi = seletorQuadro.getROI();
+        btnRefUsarQuadro.disabled = !seletorQuadro.roiValida();
+        refContagem.innerText = seletorQuadro.roiValida()
+            ? `Quadro: X=${roi.x}, Y=${roi.y} · ${roi.w} x ${roi.h} px`
+            : 'Arraste o mouse na foto para selecionar o quadro de referência.';
+    }
+
+    function usarQuadro(roi) {
+        seletorQuadro.definirROI(roi);
+        const px = seletorQuadro.extrairPixelsROI();
+        const recorte = document.createElement('canvas');
+        recorte.width = px.width;
+        recorte.height = px.height;
+        recorte.getContext('2d').putImageData(new ImageData(px.data, px.width, px.height), 0, 0);
+        refQuadro = { x: Math.max(0, roi.x), y: Math.max(0, roi.y), w: px.width, h: px.height };
+        pintor.carregarImagem(recorte, () => mostrarEtapaRef('pintura'));
+    }
+
     document.getElementById('refInputArquivo').addEventListener('change', (e) => {
         const file = e.target.files[0];
         e.target.value = '';
         if (!file) return;
+        if (temMarcacoes() && !confirm('Descartar as marcações ainda não adicionadas à base?')) return;
         refNomeFoto = file.name;
         const reader = new FileReader();
-        reader.onload = (event) => pintor.carregarImagem(event.target.result);
+        reader.onload = (event) => seletorQuadro.carregarImagem(event.target.result, (w, h) => {
+            refTamanhoFoto = { w, h };
+            refQuadro = null;
+            abrirSelecaoQuadro();
+        });
         reader.readAsDataURL(file);
+    });
+
+    btnRefUsarQuadro.addEventListener('click', () => {
+        if (seletorQuadro.roiValida()) usarQuadro(seletorQuadro.getROI());
+    });
+
+    document.getElementById('btnRefFotoInteira').addEventListener('click', () => {
+        if (refTamanhoFoto) usarQuadro({ x: 0, y: 0, w: refTamanhoFoto.w, h: refTamanhoFoto.h });
+    });
+
+    document.getElementById('btnRefTrocarQuadro').addEventListener('click', () => {
+        if (temMarcacoes() && !confirm('Trocar de quadro descarta as marcações ainda não adicionadas à base. Continuar?')) return;
+        pintor.limpar();
+        abrirSelecaoQuadro();
     });
 
     btnRefLimparMarcas.addEventListener('click', () => pintor.limpar());
@@ -1093,9 +1167,13 @@ document.addEventListener('DOMContentLoaded', () => {
             const base = BaseReferencias.carregar();
             const codificadas = {};
             Object.keys(amostras).forEach(k => { codificadas[k] = u8ParaB64(amostras[k]); });
+            const q = refQuadro;
+            const inteira = q && refTamanhoFoto && q.w === refTamanhoFoto.w && q.h === refTamanhoFoto.h;
             base.fotos.push({
                 id: Date.now().toString(36),
-                nome: refNomeFoto || `foto ${base.fotos.length + 1}`,
+                nome: (refNomeFoto || `foto ${base.fotos.length + 1}`) +
+                      (q && !inteira ? ` [quadro ${q.x},${q.y} ${q.w}x${q.h}]` : ''),
+                quadro: q,
                 criado_em: new Date().toISOString().slice(0, 19) + '+00:00',
                 marcados,
                 amostras: codificadas,

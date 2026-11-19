@@ -166,8 +166,8 @@
         <div class="card">
             <h2>1. Marcar Exemplos na Foto</h2>
             <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 14px;">
-                Envie uma foto tirada com a mesma câmera e iluminação das análises e pinte regiões onde você
-                tem certeza da classe. Fotos de areia pura e de PEBD puro são as melhores referências.
+                Envie uma foto tirada com a mesma câmera e iluminação das análises, arraste para selecionar o
+                quadro que servirá de referência (como na ROI) e pinte nele regiões onde você tem certeza da classe. Fotos de areia pura e de PEBD puro são as melhores referências.
                 Evite pintar bordas entre grãos.
             </p>
 
@@ -183,7 +183,14 @@
                 </div>
             </div>
 
-            <div class="ferramentas-roi">
+            <div class="ferramentas-roi" id="refFerrQuadro" style="display: none;">
+                <button class="btn btn-success" id="btnRefUsarQuadro" disabled title="Recorta o quadro selecionado e abre para marcar">✔ Usar quadro selecionado</button>
+                <button class="btn btn-outline" id="btnRefFotoInteira" title="Marca sobre a foto inteira, sem recortar">🖼 Foto inteira</button>
+            </div>
+
+            <div class="ferramentas-roi" id="refFerrPintura" style="display: none;">
+                <button class="btn btn-outline" id="btnRefTrocarQuadro" title="Volta à foto inteira para escolher outro quadro">⬚ Trocar quadro</button>
+                <span style="border-left: 1px solid var(--border); margin: 0 2px;"></span>
                 <button class="btn btn-outline classe-ref ativo" data-classe="1" title="Partículas de compósito PEBD">
                     <span class="bolinha" style="background:#ef4444;"></span> PEBD
                 </button>
@@ -200,7 +207,8 @@
             </div>
 
             <div class="canvas-container" id="refCanvasBox">
-                <canvas id="refCanvas" style="cursor: crosshair;"></canvas>
+                <canvas id="refQuadroCanvas" style="cursor: crosshair; display: none;"></canvas>
+                <canvas id="refCanvas" style="cursor: crosshair; display: none;"></canvas>
             </div>
 
             <div class="roi-info-banner">
