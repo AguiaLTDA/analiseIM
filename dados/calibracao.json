@@ -1,7 +1,7 @@
 {
   "app": "analiseIM",
   "versao": 1,
-  "exportado_em": "2026-11-19T17:23:02.248Z",
+  "exportado_em": "2026-11-19T17:26:54.757Z",
   "dados": {
     "luminosidade": {
       "pontos": [],
@@ -42,7 +42,7 @@
         "ld": 20.407,
         "lq": 68.024,
         "n": 4,
-        "atualizado_em": "2026-11-19T17:20:22+00:00"
+        "atualizado_em": "2026-11-19T17:24:43+00:00"
       }
     }
   }
