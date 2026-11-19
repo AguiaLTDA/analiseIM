@@ -318,6 +318,258 @@ function criarControlesExclusao(obterSeletor, { btnRoi, btnExclusao, btnLimpar, 
     };
 }
 
+/**
+ * Pintor de rótulos sobre uma foto (aba Base de Referências).
+ * Classe 1 = PEBD, 2 = areia, 3 = gás/fundo, 0 = borracha; ferramentas 'pincel' ou 'retangulo'.
+ * Os rótulos ficam num Uint8Array do tamanho da imagem original (0 = sem marca, fase + 1).
+ */
+function criarPintorRotulos(canvas, { larguraContainer = 540, onMudar = () => {} } = {}) {
+    const ctx = canvas.getContext('2d');
+    const CORES = { 1: [239, 68, 68], 2: [250, 204, 21], 3: [59, 130, 246] };
+    let imgObj = null, rotulos = null, overlay = null, overlayCtx = null;
+    let escala = 1, classe = 1, ferramenta = 'pincel', raio = 8;
+    let pintando = false, ultimo = null, inicioRet = null, retAtual = null, cursor = null;
+    let contagem = [0, 0, 0, 0];
+
+    function desenhar() {
+        if (!imgObj) return;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(imgObj, 0, 0);
+        ctx.globalAlpha = 0.55;
+        ctx.drawImage(overlay, 0, 0);
+        ctx.globalAlpha = 1;
+        const lw = Math.max(1, 1.5 / escala);
+        if (retAtual) {
+            ctx.save();
+            ctx.setLineDash([6 / escala, 4 / escala]);
+            ctx.lineWidth = 2 * lw;
+            ctx.strokeStyle = classe ? `rgb(${CORES[classe]})` : '#ffffff';
+            ctx.strokeRect(retAtual.x, retAtual.y, retAtual.w, retAtual.h);
+            ctx.restore();
+        }
+        if (cursor && ferramenta === 'pincel') {
+            ctx.save();
+            ctx.lineWidth = lw;
+            ctx.strokeStyle = '#000';
+            ctx.beginPath(); ctx.arc(cursor.x, cursor.y, raio + lw, 0, 2 * Math.PI); ctx.stroke();
+            ctx.strokeStyle = classe ? `rgb(${CORES[classe]})` : '#ffffff';
+            ctx.beginPath(); ctx.arc(cursor.x, cursor.y, raio, 0, 2 * Math.PI); ctx.stroke();
+            ctx.restore();
+        }
+    }
+
+    /** Aplica a classe atual aos pixels da caixa que satisfazem `dentro(x, y)`. */
+    function aplicar(x0, y0, x1, y1, dentro) {
+        x0 = Math.max(0, Math.floor(x0)); y0 = Math.max(0, Math.floor(y0));
+        x1 = Math.min(canvas.width - 1, Math.ceil(x1)); y1 = Math.min(canvas.height - 1, Math.ceil(y1));
+        if (x1 < x0 || y1 < y0) return;
+        const bw = x1 - x0 + 1, bh = y1 - y0 + 1;
+        const id = overlayCtx.getImageData(x0, y0, bw, bh);
+        const d = id.data;
+        for (let y = y0; y <= y1; y++) {
+            for (let x = x0; x <= x1; x++) {
+                if (!dentro(x, y)) continue;
+                const i = y * canvas.width + x;
+                if (rotulos[i] === classe) continue;
+                contagem[rotulos[i]]--;
+                contagem[classe]++;
+                rotulos[i] = classe;
+                const k = ((y - y0) * bw + (x - x0)) * 4;
+                if (classe) { d[k] = CORES[classe][0]; d[k + 1] = CORES[classe][1]; d[k + 2] = CORES[classe][2]; d[k + 3] = 255; }
+                else d[k + 3] = 0;
+            }
+        }
+        overlayCtx.putImageData(id, x0, y0);
+    }
+
+    function disco(cx, cy) {
+        const r2 = raio * raio;
+        aplicar(cx - raio, cy - raio, cx + raio, cy + raio, (x, y) => (x - cx) ** 2 + (y - cy) ** 2 <= r2);
+    }
+
+    function coords(e) {
+        const rect = canvas.getBoundingClientRect();
+        return {
+            x: Math.max(0, Math.min(canvas.width - 1, Math.round((e.clientX - rect.left) / escala))),
+            y: Math.max(0, Math.min(canvas.height - 1, Math.round((e.clientY - rect.top) / escala))),
+        };
+    }
+
+    canvas.addEventListener('mousedown', (e) => {
+        if (!imgObj) return;
+        e.preventDefault();
+        const p = coords(e);
+        pintando = true;
+        if (ferramenta === 'pincel') { disco(p.x, p.y); ultimo = p; }
+        else { inicioRet = p; retAtual = { x: p.x, y: p.y, w: 0, h: 0 }; }
+        desenhar();
+    });
+
+    canvas.addEventListener('mousemove', (e) => {
+        if (!imgObj) return;
+        const p = coords(e);
+        cursor = p;
+        if (pintando && ferramenta === 'pincel') {
+            // Interpola entre os eventos do mouse para o traço não ficar pontilhado
+            const dist = Math.hypot(p.x - ultimo.x, p.y - ultimo.y);
+            const passos = Math.max(1, Math.ceil(dist / Math.max(1, raio / 2)));
+            for (let s = 1; s <= passos; s++) {
+                disco(Math.round(ultimo.x + (p.x - ultimo.x) * s / passos), Math.round(ultimo.y + (p.y - ultimo.y) * s / passos));
+            }
+            ultimo = p;
+        } else if (pintando) {
+            retAtual = {
+                x: Math.min(inicioRet.x, p.x), y: Math.min(inicioRet.y, p.y),
+                w: Math.abs(p.x - inicioRet.x), h: Math.abs(p.y - inicioRet.y),
+            };
+        }
+        desenhar();
+    });
+
+    canvas.addEventListener('mouseleave', () => { cursor = null; desenhar(); });
+
+    window.addEventListener('mouseup', () => {
+        if (!pintando) return;
+        pintando = false;
+        if (ferramenta === 'retangulo' && retAtual && retAtual.w > 0 && retAtual.h > 0) {
+            const r = retAtual;
+            aplicar(r.x, r.y, r.x + r.w, r.y + r.h, () => true);
+        }
+        retAtual = null;
+        desenhar();
+        onMudar(contagem.slice());
+    });
+
+    return {
+        carregarImagem(src, aoCarregar) {
+            const novo = new Image();
+            novo.onload = () => {
+                imgObj = novo;
+                canvas.width = novo.naturalWidth;
+                canvas.height = novo.naturalHeight;
+                escala = larguraContainer / novo.naturalWidth;
+                canvas.style.width = (novo.naturalWidth * escala) + 'px';
+                canvas.style.height = (novo.naturalHeight * escala) + 'px';
+                overlay = document.createElement('canvas');
+                overlay.width = novo.naturalWidth;
+                overlay.height = novo.naturalHeight;
+                overlayCtx = overlay.getContext('2d');
+                rotulos = new Uint8Array(novo.naturalWidth * novo.naturalHeight);
+                contagem = [rotulos.length, 0, 0, 0];
+                desenhar();
+                onMudar(contagem.slice());
+                if (aoCarregar) aoCarregar();
+            };
+            novo.src = src;
+        },
+        definirClasse(c) { classe = c; },
+        definirFerramenta(f) { ferramenta = f; },
+        definirRaio(r) { raio = r; desenhar(); },
+        limpar() {
+            if (!imgObj) return;
+            rotulos.fill(0);
+            contagem = [rotulos.length, 0, 0, 0];
+            overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
+            desenhar();
+            onMudar(contagem.slice());
+        },
+        /** Recorte da foto em volta das marcações (pixels RGBA + rótulos), ou null se não há marcas. */
+        extrairRotulados() {
+            if (!imgObj) return null;
+            const w = canvas.width, h = canvas.height;
+            let x0 = w, y0 = h, x1 = -1, y1 = -1;
+            for (let y = 0; y < h; y++) {
+                for (let x = 0; x < w; x++) {
+                    if (!rotulos[y * w + x]) continue;
+                    if (x < x0) x0 = x; if (x > x1) x1 = x;
+                    if (y < y0) y0 = y; if (y > y1) y1 = y;
+                }
+            }
+            if (x1 < 0) return null;
+            // Margem para o desfoque 3x3 usar os vizinhos reais nas bordas das marcações
+            x0 = Math.max(0, x0 - 2); y0 = Math.max(0, y0 - 2);
+            x1 = Math.min(w - 1, x1 + 2); y1 = Math.min(h - 1, y1 + 2);
+            const bw = x1 - x0 + 1, bh = y1 - y0 + 1;
+            const aux = document.createElement('canvas');
+            aux.width = bw; aux.height = bh;
+            const auxCtx = aux.getContext('2d');
+            auxCtx.drawImage(imgObj, x0, y0, bw, bh, 0, 0, bw, bh);
+            const { data } = auxCtx.getImageData(0, 0, bw, bh);
+            const rot = new Uint8Array(bw * bh);
+            for (let y = 0; y < bh; y++) rot.set(rotulos.subarray((y + y0) * w + x0, (y + y0) * w + x0 + bw), y * bw);
+            return { img: { data, width: bw, height: bh }, rotulos: rot };
+        },
+    };
+}
+
+/** Uint8Array <-> base64 (amostras de cor guardadas de forma compacta no JSON). */
+function u8ParaB64(u8) {
+    let s = '';
+    for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+    return btoa(s);
+}
+
+function b64ParaU8(b64) {
+    const s = atob(b64);
+    const u = new Uint8Array(s.length);
+    for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i);
+    return u;
+}
+
+/**
+ * Base de referências salva no navegador: uma entrada por foto marcada, com as cores
+ * (Lab 8 bits, sorteadas) dos pixels de cada classe.
+ * { versao: 1, fotos: [{ id, nome, criado_em, marcados: [n0, n1, n2], amostras: { '0': b64, ... } }] }
+ */
+const BaseReferencias = (() => {
+    const CHAVE = 'analiseIM.referencias.v1';
+    let memoria = { versao: 1, fotos: [] };
+
+    function carregar() {
+        try {
+            const bruto = localStorage.getItem(CHAVE);
+            if (bruto) return validar(JSON.parse(bruto));
+        } catch (e) { /* armazenamento indisponível ou corrompido */ }
+        return memoria;
+    }
+
+    /** Retorna false se não coube no armazenamento do navegador (fica só na memória). */
+    function salvar(base) {
+        memoria = base;
+        try { localStorage.setItem(CHAVE, JSON.stringify(base)); return true; } catch (e) { return false; }
+    }
+
+    function validar(json) {
+        const base = json && json.base ? json.base : json;
+        if (!base || !Array.isArray(base.fotos)) throw new Error('arquivo sem a lista de fotos da base.');
+        base.fotos.forEach((f, i) => {
+            if (!f.amostras || typeof f.amostras !== 'object') throw new Error(`foto ${i + 1} sem amostras.`);
+            Object.keys(f.amostras).forEach(k => {
+                if (!['0', '1', '2'].includes(k)) throw new Error(`classe desconhecida "${k}" na foto ${i + 1}.`);
+                if (b64ParaU8(f.amostras[k]).length % 3) throw new Error(`amostras corrompidas na foto ${i + 1}.`);
+            });
+        });
+        return { versao: 1, fotos: base.fotos };
+    }
+
+    /** Amostras decodificadas de cada foto: [{0: Uint8Array, 1: ..., 2: ...}, ...]. */
+    function decodificar(base) {
+        return base.fotos.map(f => {
+            const out = {};
+            Object.keys(f.amostras).forEach(k => { out[k] = b64ParaU8(f.amostras[k]); });
+            return out;
+        });
+    }
+
+    return { carregar, salvar, validar, decodificar };
+})();
+
+const NOMES_MODOS = {
+    luminosidade: 'Luminosidade',
+    uv: 'Fluorescência UV',
+    referencia: 'Base de referências',
+};
+
 /** Executa um cálculo pesado depois de o navegador desenhar o indicador de carregamento. */
 function executarDepoisDePintar(fn) {
     return new Promise((resolve, reject) => {
@@ -407,10 +659,11 @@ document.addEventListener('DOMContentLoaded', () => {
     // Navegação entre as abas Análise / Calibração
     // -----------------------------------------------------------------
     window.mudarView = function (view) {
-        document.getElementById('viewAnalise').style.display = view === 'analise' ? 'grid' : 'none';
-        document.getElementById('viewCalibracao').style.display = view === 'calibracao' ? 'grid' : 'none';
-        document.getElementById('navAnalise').classList.toggle('active', view === 'analise');
-        document.getElementById('navCalibracao').classList.toggle('active', view === 'calibracao');
+        [['analise', 'viewAnalise', 'navAnalise'], ['referencia', 'viewReferencia', 'navReferencia'],
+         ['calibracao', 'viewCalibracao', 'navCalibracao']].forEach(([nome, idView, idNav]) => {
+            document.getElementById(idView).style.display = view === nome ? 'grid' : 'none';
+            document.getElementById(idNav).classList.toggle('active', view === nome);
+        });
         if (view === 'calibracao') carregarPontosCalibracao();
     };
 
@@ -440,9 +693,10 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     modoLeitura.addEventListener('change', () => {
-        document.getElementById('badgeModo').innerText = modoLeitura.value === 'uv'
-            ? 'Fluorescência UV (compósito verde)'
-            : 'IA Não Supervisionada (CIELAB)';
+        document.getElementById('badgeModo').innerText = {
+            uv: 'Fluorescência UV (compósito verde)',
+            referencia: 'Supervisionado (base de referências)',
+        }[modoLeitura.value] || 'IA Não Supervisionada (CIELAB)';
     });
 
     carregarImagemPadrao();
@@ -526,6 +780,8 @@ document.addEventListener('DOMContentLoaded', () => {
             ? data.stats.media_comp_massica + ' %'
             : 'não calibrado';
         document.getElementById('valExcluido').innerText = data.stats.excluido_pct + ' %';
+        document.getElementById('valIncerto').innerText = data.stats.incerto_pct > 0
+            ? `+ ${data.stats.incerto_pct} % incerto (fora da base, em roxo na máscara)` : '';
 
         // Atualiza Imagens
         document.getElementById('imgGrafico').src = data.plot;
@@ -642,7 +898,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     calModo.addEventListener('change', () => {
-        calModoLabel.innerText = calModo.value === 'uv' ? 'Fluorescência UV' : 'Luminosidade';
+        calModoLabel.innerText = NOMES_MODOS[calModo.value];
         carregarPontosCalibracao();
     });
 
@@ -773,5 +1029,202 @@ document.addEventListener('DOMContentLoaded', () => {
         reader.readAsText(file);
     });
 
-    calModoLabel.innerText = calModo.value === 'uv' ? 'Fluorescência UV' : 'Luminosidade';
+    calModoLabel.innerText = NOMES_MODOS[calModo.value];
+
+    // -----------------------------------------------------------------
+    // Aba 3: Base de Referências (exemplos marcados -> classificador)
+    // -----------------------------------------------------------------
+    const refContagem = document.getElementById('refContagem');
+    const btnRefAdicionar = document.getElementById('btnRefAdicionar');
+    const btnRefLimparMarcas = document.getElementById('btnRefLimparMarcas');
+    const refRaio = document.getElementById('refRaio');
+    let refNomeFoto = '';
+    const NOMES_CLASSES = ['PEBD', 'Areia', 'Gás / fundo'];
+
+    const pintor = criarPintorRotulos(document.getElementById('refCanvas'), {
+        onMudar(contagem) {
+            const marcados = contagem[1] + contagem[2] + contagem[3];
+            refContagem.innerText = `Marcados: PEBD ${contagem[1].toLocaleString('pt-BR')} px · ` +
+                `Areia ${contagem[2].toLocaleString('pt-BR')} px · Gás/fundo ${contagem[3].toLocaleString('pt-BR')} px`;
+            btnRefAdicionar.disabled = marcados === 0;
+            btnRefLimparMarcas.disabled = marcados === 0;
+        },
+    });
+
+    document.querySelectorAll('.classe-ref').forEach(btn => btn.addEventListener('click', () => {
+        document.querySelectorAll('.classe-ref').forEach(b => b.classList.toggle('ativo', b === btn));
+        pintor.definirClasse(parseInt(btn.dataset.classe, 10));
+    }));
+    document.querySelectorAll('.ferr-ref').forEach(btn => btn.addEventListener('click', () => {
+        document.querySelectorAll('.ferr-ref').forEach(b => b.classList.toggle('ativo', b === btn));
+        pintor.definirFerramenta(btn.dataset.ferramenta);
+    }));
+    refRaio.addEventListener('input', () => {
+        document.getElementById('refRaioValor').innerText = refRaio.value;
+        pintor.definirRaio(parseInt(refRaio.value, 10));
+    });
+
+    document.getElementById('refInputArquivo').addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        e.target.value = '';
+        if (!file) return;
+        refNomeFoto = file.name;
+        const reader = new FileReader();
+        reader.onload = (event) => pintor.carregarImagem(event.target.result);
+        reader.readAsDataURL(file);
+    });
+
+    btnRefLimparMarcas.addEventListener('click', () => pintor.limpar());
+
+    btnRefAdicionar.addEventListener('click', () => {
+        btnRefAdicionar.disabled = true;
+        executarDepoisDePintar(() => {
+            const recorte = pintor.extrairRotulados();
+            if (!recorte) throw new Error('nenhum pixel marcado.');
+            return Analise.amostrarCoresRotuladas(recorte.img, recorte.rotulos);
+        })
+        .then(({ amostras, marcados }) => {
+            const base = BaseReferencias.carregar();
+            const codificadas = {};
+            Object.keys(amostras).forEach(k => { codificadas[k] = u8ParaB64(amostras[k]); });
+            base.fotos.push({
+                id: Date.now().toString(36),
+                nome: refNomeFoto || `foto ${base.fotos.length + 1}`,
+                criado_em: new Date().toISOString().slice(0, 19) + '+00:00',
+                marcados,
+                amostras: codificadas,
+            });
+            salvarBase(base);
+            pintor.limpar();
+        })
+        .catch(err => {
+            alert('Falha ao adicionar à base: ' + mensagemErro(err));
+            btnRefAdicionar.disabled = false;
+        });
+    });
+
+    function salvarBase(base) {
+        if (!BaseReferencias.salvar(base)) {
+            alert('A base não coube no armazenamento do navegador e ficará só nesta aba. ' +
+                  'Use "Exportar Base" para não perder as marcações.');
+        }
+        atualizarModeloReferencia();
+    }
+
+    /** Retreina o classificador com a base atual e redesenha o painel. */
+    function atualizarModeloReferencia() {
+        const base = BaseReferencias.carregar();
+        const lista = BaseReferencias.decodificar(base);
+        let modelo = null, avaliacao = null, motivo = '';
+        if (lista.length) {
+            try {
+                modelo = Analise.treinarModeloReferencia(Analise.concatenarAmostras(lista));
+                avaliacao = Analise.avaliarModeloReferencia(lista);
+            } catch (err) {
+                modelo = null;
+                motivo = mensagemErro(err);
+            }
+        }
+        Analise.definirModeloReferencia(modelo);
+        renderizarBase(base, modelo, avaliacao, motivo);
+    }
+
+    function renderizarBase(base, modelo, avaliacao, motivo) {
+        const status = document.getElementById('refStatus');
+        status.className = 'ref-status' + (modelo ? ' ok' : base.fotos.length ? ' aviso' : '');
+        if (modelo) {
+            const semGas = !modelo.classes.some(c => c.fase === 2);
+            status.innerText = `Classificador pronto (${base.fotos.length} foto(s)). ` +
+                (avaliacao && avaliacao.acuracia !== null ? `Acerto na validação: ${avaliacao.acuracia.toLocaleString('pt-BR')} %. ` : '') +
+                (semGas ? 'Sem exemplos de gás/fundo: pixels de bolha ou fundo tendem a ficar "incertos".' : '');
+        } else {
+            status.innerText = base.fotos.length ? `Classificador indisponível: ${motivo}` : 'Base vazia.';
+        }
+
+        const corpo = document.getElementById('refTabelaFotos');
+        corpo.innerHTML = '';
+        if (!base.fotos.length) {
+            corpo.innerHTML = '<tr><td colspan="6" style="color: var(--text-muted);">Nenhuma foto adicionada.</td></tr>';
+        }
+        base.fotos.forEach((f, i) => {
+            const tr = document.createElement('tr');
+            const m = f.marcados || [0, 0, 0];
+            const celNome = document.createElement('td');
+            celNome.textContent = f.nome;
+            celNome.style.cssText = 'max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;';
+            celNome.title = f.nome;
+            tr.innerHTML = `<td>${i + 1}</td>`;
+            tr.appendChild(celNome);
+            tr.insertAdjacentHTML('beforeend', m.map(v => `<td>${v.toLocaleString('pt-BR')}</td>`).join('') +
+                `<td><button class="btn btn-outline" style="padding:4px 10px;font-size:0.75rem;" title="Remover esta foto da base">✕</button></td>`);
+            tr.querySelector('button').addEventListener('click', () => {
+                if (!confirm(`Remover "${f.nome}" da base?`)) return;
+                const atual = BaseReferencias.carregar();
+                atual.fotos = atual.fotos.filter(x => x.id !== f.id);
+                salvarBase(atual);
+            });
+            corpo.appendChild(tr);
+        });
+
+        document.getElementById('refModelo').style.display = modelo ? 'block' : 'none';
+        if (!modelo) return;
+
+        const classes = document.getElementById('refTabelaClasses');
+        classes.innerHTML = '';
+        modelo.classes.forEach(c => {
+            const [L, a, b] = c.media;
+            const rgb = Analise.lab8ParaRgb(L, a, b);
+            classes.insertAdjacentHTML('beforeend', `<tr>
+                <td>${NOMES_CLASSES[c.fase]}</td>
+                <td><span class="amostra-cor" style="background: rgb(${rgb});"></span></td>
+                <td>${(L * 100 / 255).toFixed(1)}</td><td>${(a - 128).toFixed(1)}</td><td>${(b - 128).toFixed(1)}</td>
+                <td>${c.n.toLocaleString('pt-BR')}</td></tr>`);
+        });
+
+        document.getElementById('refMetodoValidacao').innerText = avaliacao.metodo === 'foto'
+            ? `Cada foto foi classificada por um modelo treinado só com as outras (${avaliacao.fotosTestadas} foto(s) testada(s), ` +
+              `${avaliacao.nTeste.toLocaleString('pt-BR')} pixels). Percentual por linha.`
+            : 'Só há uma foto utilizável: 70% dos pixels treinam e 30% testam. Essa medida é otimista; ' +
+              'adicione fotos diferentes para uma validação mais honesta. Percentual por linha.';
+        const matriz = document.getElementById('refMatriz');
+        matriz.innerHTML = '';
+        avaliacao.matriz.forEach((linha, f) => {
+            const total = linha.reduce((s, v) => s + v, 0);
+            if (!total) return;
+            matriz.insertAdjacentHTML('beforeend', `<tr><td><b>${NOMES_CLASSES[f]}</b></td>` +
+                linha.map((v, j) => `<td class="${j === f ? 'diag' : ''}">${(100 * v / total).toFixed(1)}%</td>`).join('') +
+                '</tr>');
+        });
+    }
+
+    document.getElementById('btnRefExportar').addEventListener('click', () => {
+        const arquivo = { app: 'analiseIM', tipo: 'base-referencias', versao: 1,
+                          exportado_em: new Date().toISOString(), base: BaseReferencias.carregar() };
+        baixarArquivo(JSON.stringify(arquivo), 'base_referencias_analiseIM.json', 'application/json');
+    });
+
+    document.getElementById('refInputImportar').addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        e.target.value = '';
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            try {
+                const base = BaseReferencias.validar(JSON.parse(event.target.result));
+                if (!confirm(`Substituir a base deste navegador pela do arquivo? (${base.fotos.length} foto(s))`)) return;
+                salvarBase(base);
+            } catch (err) {
+                alert('Arquivo de base inválido: ' + mensagemErro(err));
+            }
+        };
+        reader.readAsText(file);
+    });
+
+    document.getElementById('btnRefLimparBase').addEventListener('click', () => {
+        if (!BaseReferencias.carregar().fotos.length) return;
+        if (!confirm('Apagar toda a base de referências deste navegador? Exporte antes se quiser guardar uma cópia.')) return;
+        salvarBase({ versao: 1, fotos: [] });
+    });
+
+    atualizarModeloReferencia();
 });

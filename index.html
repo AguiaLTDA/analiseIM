@@ -19,6 +19,7 @@
 
     <div class="view-nav">
         <button class="view-nav-btn active" id="navAnalise" onclick="mudarView('analise')">📊 Análise</button>
+        <button class="view-nav-btn" id="navReferencia" onclick="mudarView('referencia')">🎯 Base de Referências</button>
         <button class="view-nav-btn" id="navCalibracao" onclick="mudarView('calibracao')">🧪 Calibração</button>
     </div>
 
@@ -44,6 +45,7 @@
                     <select id="modoLeitura">
                         <option value="luminosidade">Luminosidade (luz visível)</option>
                         <option value="uv">Fluorescência UV</option>
+                        <option value="referencia">Base de referências (supervisionado)</option>
                     </select>
                 </div>
                 <div class="input-group" title="Como a ROI é dividida em amostras para o Índice de Lacey">
@@ -111,6 +113,7 @@
                 <div class="stat-card">
                     <div class="label">Área Excluída da ROI (%)</div>
                     <div class="value" id="valExcluido">-</div>
+                    <div class="sub-valor" id="valIncerto"></div>
                 </div>
             </div>
 
@@ -153,6 +156,110 @@
         </div>
     </div>
 
+    <!-- Aba Base de Referências: exemplos marcados de PEBD / areia / gás para o classificador -->
+    <div class="container" id="viewReferencia" style="display: none;">
+        <div class="card">
+            <h2>1. Marcar Exemplos na Foto</h2>
+            <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 14px;">
+                Envie uma foto tirada com a mesma câmera e iluminação das análises e pinte regiões onde você
+                tem certeza da classe. Fotos de areia pura e de PEBD puro são as melhores referências.
+                Evite pintar bordas entre grãos.
+            </p>
+
+            <div class="controls-row">
+                <input type="file" id="refInputArquivo" accept="image/*" style="display: none;">
+                <button class="btn btn-outline" onclick="document.getElementById('refInputArquivo').click()">
+                    ⬆️ Enviar Foto de Referência
+                </button>
+                <div class="input-group">
+                    <label for="refRaio">Pincel (px):</label>
+                    <input type="range" id="refRaio" min="1" max="60" value="8" style="width: 110px;">
+                    <span id="refRaioValor" style="font-size: 0.8rem; min-width: 24px;">8</span>
+                </div>
+            </div>
+
+            <div class="ferramentas-roi">
+                <button class="btn btn-outline classe-ref ativo" data-classe="1" title="Partículas de compósito PEBD">
+                    <span class="bolinha" style="background:#ef4444;"></span> PEBD
+                </button>
+                <button class="btn btn-outline classe-ref" data-classe="2" title="Areia">
+                    <span class="bolinha" style="background:#facc15;"></span> Areia
+                </button>
+                <button class="btn btn-outline classe-ref" data-classe="3" title="Bolhas, região livre acima do leito, fundo">
+                    <span class="bolinha" style="background:#3b82f6;"></span> Gás / fundo
+                </button>
+                <button class="btn btn-outline classe-ref" data-classe="0" title="Apaga marcações">🧽 Borracha</button>
+                <span style="border-left: 1px solid var(--border); margin: 0 2px;"></span>
+                <button class="btn btn-outline ferr-ref ativo" data-ferramenta="pincel" title="Pinta com o mouse pressionado">🖌 Pincel</button>
+                <button class="btn btn-outline ferr-ref" data-ferramenta="retangulo" title="Arraste para preencher um retângulo inteiro">▭ Retângulo</button>
+            </div>
+
+            <div class="canvas-container" id="refCanvasBox">
+                <canvas id="refCanvas" style="cursor: crosshair;"></canvas>
+            </div>
+
+            <div class="roi-info-banner">
+                <span id="refContagem">Envie uma foto para começar a marcar.</span>
+            </div>
+
+            <div class="controls-row" style="margin-top: 16px; margin-bottom: 0;">
+                <button class="btn btn-outline" id="btnRefLimparMarcas" disabled>🗑 Limpar marcações</button>
+                <button class="btn btn-success" id="btnRefAdicionar" style="flex: 1; justify-content: center;" disabled>
+                    ➕ Adicionar Marcações à Base
+                </button>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>2. Base e Classificador</h2>
+
+            <div id="refStatus" class="ref-status">Base vazia.</div>
+
+            <h3 style="font-size: 0.9rem; margin: 14px 0 6px;">Fotos na base</h3>
+            <div class="table-wrapper" style="max-height: 190px;">
+                <table>
+                    <thead>
+                        <tr><th>#</th><th>Foto</th><th>PEBD (px)</th><th>Areia (px)</th><th>Gás (px)</th><th></th></tr>
+                    </thead>
+                    <tbody id="refTabelaFotos">
+                        <tr><td colspan="6" style="color: var(--text-muted);">Nenhuma foto adicionada.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div id="refModelo" style="display: none;">
+                <h3 style="font-size: 0.9rem; margin: 16px 0 6px;">Cor de cada classe (média em CIELAB)</h3>
+                <div class="table-wrapper" style="max-height: none;">
+                    <table>
+                        <thead><tr><th>Classe</th><th>Cor</th><th>L*</th><th>a*</th><th>b*</th><th>Amostras</th></tr></thead>
+                        <tbody id="refTabelaClasses"></tbody>
+                    </table>
+                </div>
+
+                <h3 style="font-size: 0.9rem; margin: 16px 0 6px;">Validação (matriz de confusão)</h3>
+                <p id="refMetodoValidacao" style="color: var(--text-muted); font-size: 0.78rem; margin-bottom: 6px;"></p>
+                <div class="table-wrapper" style="max-height: none;">
+                    <table class="matriz-confusao">
+                        <thead><tr><th>Marcado \ Classificado</th><th>PEBD</th><th>Areia</th><th>Gás</th><th>Incerto</th></tr></thead>
+                        <tbody id="refMatriz"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="controls-row" style="margin-top: 14px; margin-bottom: 0;">
+                <button class="btn btn-outline" id="btnRefExportar" style="flex: 1; justify-content: center;">💾 Exportar Base</button>
+                <input type="file" id="refInputImportar" accept="application/json,.json" style="display: none;">
+                <button class="btn btn-outline" style="flex: 1; justify-content: center;" onclick="document.getElementById('refInputImportar').click()">📂 Importar Base</button>
+                <button class="btn btn-outline" id="btnRefLimparBase" style="flex: 1; justify-content: center;">🗑 Apagar Base</button>
+            </div>
+            <p style="color: var(--text-muted); font-size: 0.78rem; margin-top: 8px;">
+                A base fica salva neste navegador. Com ela treinada, escolha o modo
+                <b>"Base de referências"</b> na Análise e na Calibração. Se a base mudar, refaça a curva de
+                calibração desse modo.
+            </p>
+        </div>
+    </div>
+
     <!-- Aba de Calibração: curva fração medida na ROI -> fração mássica real -->
     <div class="container" id="viewCalibracao" style="display: none;">
         <div class="card">
@@ -168,6 +275,7 @@
                     <select id="calModo">
                         <option value="luminosidade">Luminosidade (luz visível)</option>
                         <option value="uv">Fluorescência UV</option>
+                        <option value="referencia">Base de referências (supervisionado)</option>
                     </select>
                 </div>
                 <div class="input-group">

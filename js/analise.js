@@ -1,7 +1,8 @@
 /**
  * ANÁLISE DE MISTURA EM LEITO FLUIDIZADO - CEUNES / UFES
  * Núcleo de cálculo executado no navegador (porta do antigo backend Python):
- * segmentação por luminosidade (K-Means em CIELAB) ou por fluorescência UV,
+ * segmentação por luminosidade (K-Means em CIELAB), por fluorescência UV ou por uma
+ * base de referências marcada pelo usuário (classificador supervisionado),
  * perfil C(z), Índice de Lacey e curva de calibração.
  *
  * Funções de cálculo puras (sem DOM): também rodam no Node para testes.
@@ -25,7 +26,15 @@
     const L_MIN_COMPOSITO_UV = 15.0;      // L* mínimo (0-100) para aceitar o pixel como fluorescente
     const GAS_FRACAO_L_UV = 0.70;         // gás: L* abaixo desta fração da mediana de L* da coluna
 
-    const MODOS = ['luminosidade', 'uv'];
+    const MODOS = ['luminosidade', 'uv', 'referencia'];
+
+    // Modo "base de referências": classificador gaussiano (QDA) por classe em CIELAB
+    const MIN_AMOSTRAS_CLASSE = 30;       // pixels marcados mínimos para usar uma classe
+    const REGULARIZACAO_COV = 1.0;        // somado à diagonal da covariância (evita matriz singular)
+    // Distância de Mahalanobis² acima da qual o pixel não pertence a nenhuma classe:
+    // quantil 99,9% da qui-quadrado com 3 graus de liberdade
+    const LIMIAR_D2_INCERTO = 16.27;
+    let modeloReferencia = null;
     const MIN_PONTOS_AJUSTE = 3;
 
     // K-Means: o ajuste usa no máximo esta quantidade de pixels (sorteados); depois todos são classificados
@@ -35,6 +44,7 @@
 
     // Cores da máscara (RGB): compósito vermelho, areia bege, gás azul (mesmas do favicon)
     const CORES_FASES = [[200, 40, 40], [220, 190, 140], [60, 160, 230]];
+    const COR_INCERTO = [150, 60, 200];   // roxo: pixel que não se parece com nenhuma classe
 
     // -----------------------------------------------------------------------
     // Utilitários
@@ -145,17 +155,21 @@
     }
 
     // -----------------------------------------------------------------------
-    // Segmentação: 0 = compósito, 1 = areia, 2 = gás, 3 = zona de exclusão
+    // Segmentação: 0 = compósito, 1 = areia, 2 = gás, 3 = zona de exclusão,
+    // 4 = incerto (modo base de referências: pixel longe de todas as classes)
     // -----------------------------------------------------------------------
 
     const FASE_EXCLUIDA = 3;
+    const FASE_INCERTA = 4;
 
     /**
      * img.excluido (opcional): Uint8Array do tamanho da ROI, 1 = pixel numa zona de exclusão.
      * Pixels excluídos não entram no ajuste do K-Means nem em nenhuma contagem.
      */
     function segmentar(img, modo) {
-        const seg = modo === 'uv' ? segmentarFasesUV(img) : segmentarFases(img);
+        const seg = modo === 'uv' ? segmentarFasesUV(img)
+            : modo === 'referencia' ? segmentarFasesReferencia(img)
+            : segmentarFases(img);
         if (img.excluido) {
             for (let i = 0; i < seg.fases.length; i++) if (img.excluido[i]) seg.fases[i] = FASE_EXCLUIDA;
         }
@@ -358,6 +372,217 @@
     }
 
     // -----------------------------------------------------------------------
+    // Base de referências: classificador supervisionado em CIELAB
+    // -----------------------------------------------------------------------
+
+    /**
+     * Cores (CIELAB 8 bits, após o mesmo desfoque 3x3 do modo luminosidade) dos pixels
+     * marcados. rotulos: Uint8Array do tamanho da imagem, 0 = sem marca, fase + 1 = marcado.
+     * Retorna { amostras: {0, 1, 2: Uint8Array [L, a, b, ...]}, marcados: [n0, n1, n2] };
+     * cada classe é sorteada (sem reposição) até maxPorClasse pixels.
+     */
+    function amostrarCoresRotuladas(img, rotulos, maxPorClasse = 3000, semente = 7) {
+        const n = img.width * img.height;
+        const lab = rgbParaLab8(desfoqueGaussiano(img, 3), n);
+        const rng = mulberry32(semente);
+        const amostras = {}, marcados = [0, 0, 0];
+        for (let fase = 0; fase < 3; fase++) {
+            const idx = [];
+            for (let i = 0; i < n; i++) if (rotulos[i] === fase + 1) idx.push(i);
+            marcados[fase] = idx.length;
+            if (!idx.length) continue;
+            const k = Math.min(maxPorClasse, idx.length);
+            for (let j = 0; j < k; j++) {  // Fisher-Yates parcial
+                const t = j + Math.floor(rng() * (idx.length - j));
+                [idx[j], idx[t]] = [idx[t], idx[j]];
+            }
+            const out = new Uint8Array(k * 3);
+            for (let j = 0; j < k; j++) {
+                out[j * 3] = lab[idx[j] * 3]; out[j * 3 + 1] = lab[idx[j] * 3 + 1]; out[j * 3 + 2] = lab[idx[j] * 3 + 2];
+            }
+            amostras[fase] = out;
+        }
+        return { amostras, marcados };
+    }
+
+    /** Inversa e log-determinante de uma matriz 3x3 (vetor de 9, por linhas). */
+    function inverter3x3(m) {
+        const [a, b, c, d, e, f, g, h, i] = m;
+        const A = e * i - f * h, B = -(d * i - f * g), C = d * h - e * g;
+        const det = a * A + b * B + c * C;
+        if (!(det > 0)) return null;
+        const inv = [A, -(b * i - c * h), b * f - c * e,
+                     B, a * i - c * g, -(a * f - c * d),
+                     C, -(a * h - b * g), a * e - b * d].map(v => v / det);
+        return { inv, logdet: Math.log(det) };
+    }
+
+    /**
+     * Ajusta uma gaussiana (média + covariância) por classe.
+     * amostras: {0: Uint8Array, 1: ..., 2: ...} (Lab 8 bits). Compósito e areia são obrigatórios;
+     * gás/fundo é opcional (sem ele, o que não for sólido tende a virar "incerto").
+     */
+    function treinarModeloReferencia(amostras) {
+        const classes = [];
+        for (let fase = 0; fase < 3; fase++) {
+            const arr = amostras[fase];
+            const n = arr ? arr.length / 3 : 0;
+            if (n < MIN_AMOSTRAS_CLASSE) {
+                if (fase < 2) {
+                    const nome = fase === 0 ? 'PEBD/compósito' : 'areia';
+                    throw new Error(`Marque ao menos ${MIN_AMOSTRAS_CLASSE} pixels de ${nome} (há ${n}).`);
+                }
+                continue;
+            }
+            const media = [0, 0, 0];
+            for (let j = 0; j < n; j++) for (let d = 0; d < 3; d++) media[d] += arr[j * 3 + d];
+            for (let d = 0; d < 3; d++) media[d] /= n;
+            const cov = new Array(9).fill(0);
+            for (let j = 0; j < n; j++) {
+                const v = [arr[j * 3] - media[0], arr[j * 3 + 1] - media[1], arr[j * 3 + 2] - media[2]];
+                for (let p = 0; p < 3; p++) for (let q = 0; q < 3; q++) cov[p * 3 + q] += v[p] * v[q];
+            }
+            for (let p = 0; p < 9; p++) cov[p] /= (n - 1);
+            for (let d = 0; d < 3; d++) cov[d * 4] += REGULARIZACAO_COV;
+            const r = inverter3x3(cov);
+            if (!r) throw new Error('Covariância degenerada numa classe; marque regiões mais variadas.');
+            classes.push({ fase, n, media, cov, inv: r.inv, logdet: r.logdet });
+        }
+        return { tipo: 'qda-lab', classes, limiarD2: LIMIAR_D2_INCERTO };
+    }
+
+    /**
+     * Fase do pixel (0, 1, 2) pela maior verossimilhança gaussiana (classes com o mesmo peso),
+     * ou FASE_INCERTA se a distância de Mahalanobis² até a classe vencedora passar do limiar.
+     */
+    function classificarLab(modelo, L, a, b) {
+        let melhor = -1, melhorScore = Infinity, melhorD2 = Infinity;
+        const cs = modelo.classes;
+        for (let k = 0; k < cs.length; k++) {
+            const c = cs[k], m = c.inv;
+            const x = L - c.media[0], y = a - c.media[1], z = b - c.media[2];
+            const d2 = x * (m[0] * x + m[1] * y + m[2] * z)
+                     + y * (m[3] * x + m[4] * y + m[5] * z)
+                     + z * (m[6] * x + m[7] * y + m[8] * z);
+            const score = d2 + c.logdet;
+            if (score < melhorScore) { melhorScore = score; melhor = c.fase; melhorD2 = d2; }
+        }
+        return melhorD2 > modelo.limiarD2 ? FASE_INCERTA : melhor;
+    }
+
+    function segmentarFasesReferencia(img) {
+        if (!modeloReferencia) {
+            throw new Error('Nenhuma base de referências treinada. Marque exemplos de PEBD e de areia ' +
+                            'na aba "Base de Referências" ou escolha outro modo de leitura.');
+        }
+        const n = img.width * img.height;
+        const lab = rgbParaLab8(desfoqueGaussiano(img, 3), n);
+        const fases = new Uint8Array(n);
+        for (let i = 0; i < n; i++) {
+            if (img.excluido && img.excluido[i]) continue;  // vira FASE_EXCLUIDA em segmentar()
+            fases[i] = classificarLab(modeloReferencia, lab[i * 3], lab[i * 3 + 1], lab[i * 3 + 2]);
+        }
+        return { fases, width: img.width, height: img.height };
+    }
+
+    function concatenarAmostras(lista) {
+        const out = {};
+        for (let fase = 0; fase < 3; fase++) {
+            const partes = lista.map(a => a[fase]).filter(Boolean);
+            if (!partes.length) continue;
+            const u = new Uint8Array(partes.reduce((s, p) => s + p.length, 0));
+            let pos = 0;
+            partes.forEach(p => { u.set(p, pos); pos += p.length; });
+            out[fase] = u;
+        }
+        return out;
+    }
+
+    /**
+     * Matriz de confusão do classificador (linhas = classe marcada; colunas = compósito,
+     * areia, gás, incerto).
+     * Com 2 ou mais fotos na base: validação "deixa uma foto de fora" (cada foto é testada
+     * por um modelo treinado só com as outras; é a medida mais honesta, porque pixels da
+     * mesma foto são muito parecidos entre si). Com 1 foto: sorteio 70% treino / 30% teste.
+     * lista: [{0: Uint8Array, 1: ..., 2: ...}, ...], uma entrada por foto.
+     */
+    function avaliarModeloReferencia(lista) {
+        const matriz = [0, 1, 2].map(() => [0, 0, 0, 0]);
+        const testar = (modelo, amostras) => {
+            for (let fase = 0; fase < 3; fase++) {
+                const arr = amostras[fase];
+                if (!arr) continue;
+                for (let j = 0; j < arr.length / 3; j++) {
+                    const p = classificarLab(modelo, arr[j * 3], arr[j * 3 + 1], arr[j * 3 + 2]);
+                    matriz[fase][p === FASE_INCERTA ? 3 : p]++;
+                }
+            }
+        };
+
+        let metodo = null, fotosTestadas = 0;
+        if (lista.length >= 2) {
+            lista.forEach((teste, k) => {
+                let modelo;
+                try { modelo = treinarModeloReferencia(concatenarAmostras(lista.filter((_, j) => j !== k))); }
+                catch (e) { return; }  // sem esta foto falta alguma classe: ela não é testada
+                testar(modelo, teste);
+                fotosTestadas++;
+            });
+            if (fotosTestadas) metodo = 'foto';
+        }
+        if (!metodo) {
+            const rng = mulberry32(11);
+            const treino = {}, teste = {};
+            const todas = concatenarAmostras(lista);
+            for (let fase = 0; fase < 3; fase++) {
+                const arr = todas[fase];
+                if (!arr) continue;
+                const n = arr.length / 3;
+                const ordem = Array.from({ length: n }, (_, i) => i);
+                for (let i = n - 1; i > 0; i--) {
+                    const t = Math.floor(rng() * (i + 1));
+                    [ordem[i], ordem[t]] = [ordem[t], ordem[i]];
+                }
+                const nTreino = Math.round(0.7 * n);
+                const copiar = idx => {
+                    const u = new Uint8Array(idx.length * 3);
+                    idx.forEach((i, j) => { u[j * 3] = arr[i * 3]; u[j * 3 + 1] = arr[i * 3 + 1]; u[j * 3 + 2] = arr[i * 3 + 2]; });
+                    return u;
+                };
+                treino[fase] = copiar(ordem.slice(0, nTreino));
+                teste[fase] = copiar(ordem.slice(nTreino));
+            }
+            testar(treinarModeloReferencia(treino), teste);
+            metodo = 'pixel';
+        }
+
+        let certos = 0, total = 0;
+        for (let f = 0; f < 3; f++) { certos += matriz[f][f]; total += matriz[f].reduce((s, v) => s + v, 0); }
+        return {
+            metodo, fotosTestadas, matriz,
+            acuracia: total ? arredondar(100 * certos / total, 2) : null,
+            nTeste: total,
+        };
+    }
+
+    /** Lab 8 bits -> RGB (para mostrar a cor média de cada classe). */
+    function lab8ParaRgb(L8, a8, b8) {
+        const L = L8 * 100 / 255, a = a8 - 128, b = b8 - 128;
+        const fy = (L + 16) / 116, fx = fy + a / 500, fz = fy - b / 200;
+        const finv = t => (t ** 3 > 0.008856 ? t ** 3 : (t - 16 / 116) / 7.787);
+        const X = finv(fx) * 0.950456, Y = L > 7.9996 ? fy ** 3 : L / 903.3, Z = finv(fz) * 1.088754;
+        const lin = [
+            3.240479 * X - 1.537150 * Y - 0.498535 * Z,
+            -0.969256 * X + 1.875991 * Y + 0.041556 * Z,
+            0.055648 * X - 0.204043 * Y + 1.057311 * Z,
+        ];
+        return lin.map(v => {
+            const c = v <= 0.0031308 ? 12.92 * v : 1.055 * Math.pow(Math.max(v, 0), 1 / 2.4) - 0.055;
+            return Math.min(255, Math.max(0, Math.round(c * 255)));
+        });
+    }
+
+    // -----------------------------------------------------------------------
     // Perfil vertical, estatísticas e Índice de Lacey
     // -----------------------------------------------------------------------
 
@@ -459,8 +684,11 @@
         const n = validos.length;
         const media = n ? validos.reduce((s, v) => s + v, 0) / n : 0;
         const desvio = n ? Math.sqrt(validos.reduce((s, v) => s + (v - media) ** 2, 0) / n) : 0;
-        let nExcluidos = 0;
-        for (let i = 0; i < seg.fases.length; i++) if (seg.fases[i] === FASE_EXCLUIDA) nExcluidos++;
+        let nExcluidos = 0, nIncertos = 0;
+        for (let i = 0; i < seg.fases.length; i++) {
+            if (seg.fases[i] === FASE_EXCLUIDA) nExcluidos++;
+            else if (seg.fases[i] === FASE_INCERTA) nIncertos++;
+        }
         return {
             media_comp: arredondar(media, 3),
             desvio_comp: arredondar(desvio, 3),
@@ -470,6 +698,7 @@
             lacey_n_amostras: lacey.nUsadas,
             lacey_tamanho_mm: arredondar(lacey.ladoMm, 2),
             excluido_pct: arredondar(100 * nExcluidos / seg.fases.length, 2),
+            incerto_pct: arredondar(100 * nIncertos / seg.fases.length, 2),
         };
     }
 
@@ -608,7 +837,8 @@
 
     /**
      * Original | segmentação colorida, lado a lado, como JPEG (data URL).
-     * Zonas de exclusão aparecem na segmentação em cinza hachurado, sem cor de fase.
+     * Zonas de exclusão aparecem na segmentação em cinza hachurado, sem cor de fase;
+     * pixels incertos (modo base de referências) em roxo.
      * amostrasLacey (opcional): contorno branco nas amostras usadas no Índice de Lacey.
      */
     function gerarOverlay(img, seg, amostrasLacey) {
@@ -630,7 +860,7 @@
                     d[esq + c] = img.data[src + c];
                     d[dir + c] = fase === FASE_EXCLUIDA
                         ? ((x + y) % 8 < 2 ? 95 : 175)
-                        : Math.round(0.35 * img.data[src + c] + 0.65 * CORES_FASES[fase][c]);
+                        : Math.round(0.35 * img.data[src + c] + 0.65 * (fase === FASE_INCERTA ? COR_INCERTO : CORES_FASES[fase])[c]);
                 }
             }
         }
@@ -824,7 +1054,7 @@
         const ex = marcasEixo(0, xMax);
         const ey = marcasEixo(Math.min(0, ...ys, ...yReta), Math.max(...ys, ...yReta, 1e-6) * 1.1);
 
-        const nomeModo = modo === 'uv' ? 'uv' : 'luminosidade';
+        const nomeModo = { uv: 'UV', referencia: 'base de referências' }[modo] || 'luminosidade';
         const eix = desenharEixos(ctx, { x: 80, y: 40, w: 490, h: 370 }, ex, ey, {
             titulo: `Curva de calibração — modo ${nomeModo}`,
             rotuloX: 'Fração medida na ROI (% da área de sólidos)',
@@ -850,8 +1080,17 @@
         gerarGraficoCalibracao,
         gerarOverlay,
         descreverAmostragem,
+        // Base de referências
+        MIN_AMOSTRAS_CLASSE,
+        amostrarCoresRotuladas,
+        treinarModeloReferencia,
+        avaliarModeloReferencia,
+        concatenarAmostras,
+        definirModeloReferencia: m => { modeloReferencia = m; },
+        temModeloReferencia: () => !!modeloReferencia,
+        lab8ParaRgb,
         // expostas para testes
-        _interno: { definirTentativas: n => { KMEANS_TENTATIVAS = n; }, desfoqueGaussiano, rgbParaLab8, segmentar, calcularPerfil, indiceLacey, somaMovel },
+        _interno: { definirTentativas: n => { KMEANS_TENTATIVAS = n; }, desfoqueGaussiano, rgbParaLab8, segmentar, calcularPerfil, indiceLacey, somaMovel, classificarLab },
     };
 
     if (typeof module !== 'undefined' && module.exports) module.exports = Analise;

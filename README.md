@@ -18,6 +18,13 @@ como site estático no GitHub Pages, de graça, e as imagens analisadas não sae
 **Calibração:** fica salva no navegador de quem calibrou. Use **Exportar Calibração** para guardar o arquivo
 `.json` e **Importar Calibração** para levar a mesma curva a outro computador ou navegador.
 
+**Base de referências (modo supervisionado):** na aba *Base de Referências*, pinte sobre fotos de referência
+regiões de PEBD, areia e gás/fundo. O app guarda uma amostra das cores (CIELAB) de cada classe, ajusta uma
+gaussiana por classe (QDA) e mostra a matriz de confusão (validação deixando uma foto de fora quando há duas
+ou mais). No modo de leitura *Base de referências*, cada pixel vai para a classe mais provável; pixels longe
+de todas as classes ficam como "incertos" (roxo na máscara) e não entram nas contas. A base fica no navegador
+e pode ser exportada/importada em JSON. Se a base mudar, refaça a curva de calibração desse modo.
+
 **Testar localmente:** o `index.html` precisa ser aberto por um servidor (clicar duas vezes no arquivo bloqueia a
 leitura dos pixels). Qualquer servidor estático serve, por exemplo `python -m http.server` na pasta do projeto,
 ou o próprio `app.py`.
