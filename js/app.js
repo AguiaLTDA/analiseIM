@@ -533,9 +533,13 @@ const BaseReferencias = (() => {
         return memoria;
     }
 
-    /** Retorna false se não coube no armazenamento do navegador (fica só na memória). */
-    function salvar(base) {
+    /**
+     * Retorna false se não coube no armazenamento do navegador (fica só na memória).
+     * `origem` = 'nuvem' quando a base veio do GitHub (não conta como alteração local).
+     */
+    function salvar(base, origem) {
         memoria = base;
+        if (origem !== 'nuvem') EstadoNuvem.marcarAlterado('referencias');
         try { localStorage.setItem(CHAVE, JSON.stringify(base)); return true; } catch (e) { return false; }
     }
 
@@ -631,8 +635,10 @@ const Calibracao = (() => {
         return normalizar(memoria);
     }
 
-    function salvar(dados) {
+    /** `origem` = 'nuvem' quando a calibração veio do GitHub (não conta como alteração local). */
+    function salvar(dados, origem) {
         memoria = dados;
+        if (origem !== 'nuvem') EstadoNuvem.marcarAlterado('calibracao');
         try { localStorage.setItem(CHAVE, JSON.stringify(dados)); } catch (e) { /* fica só na memória */ }
     }
 
@@ -1227,4 +1233,156 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     atualizarModeloReferencia();
+
+    // -----------------------------------------------------------------
+    // Dados online (GitHub): base de referências e calibração
+    // -----------------------------------------------------------------
+    const ITENS_NUVEM = {
+        referencias: {
+            nome: 'base de referências',
+            caminho: 'dados/base_referencias.json',
+            serializar: () => JSON.stringify({ app: 'analiseIM', tipo: 'base-referencias', versao: 1,
+                                               exportado_em: new Date().toISOString(), base: BaseReferencias.carregar() }),
+            aplicar: texto => {
+                BaseReferencias.salvar(BaseReferencias.validar(JSON.parse(texto)), 'nuvem');
+                atualizarModeloReferencia();
+            },
+            vazio: () => !BaseReferencias.carregar().fotos.length,
+        },
+        calibracao: {
+            nome: 'calibração',
+            caminho: 'dados/calibracao.json',
+            serializar: () => JSON.stringify({ app: 'analiseIM', versao: 1, exportado_em: new Date().toISOString(),
+                                               dados: Calibracao.carregar() }, null, 2),
+            aplicar: texto => {
+                Calibracao.salvar(Calibracao.validarImportacao(JSON.parse(texto)), 'nuvem');
+                carregarPontosCalibracao();
+            },
+            vazio: () => Analise.MODOS.every(m => !Calibracao.carregar()[m].pontos.length),
+        },
+    };
+    const nuvemStatus = document.getElementById('nuvemStatus');
+    const btnNuvemSalvar = document.getElementById('btnNuvemSalvar');
+    const btnNuvemToken = document.getElementById('btnNuvemToken');
+    const shaOnline = {};       // sha da versão online vista nesta sessão (null = arquivo ainda não existe)
+    let nuvemErro = '';
+    let nuvemOcupada = true;
+
+    function renderizarNuvem() {
+        const chaves = Object.keys(ITENS_NUVEM);
+        const pendentes = chaves.filter(k => (EstadoNuvem.obter(k) || {}).sujo);
+        const conflitos = pendentes.filter(k => shaOnline[k] && shaOnline[k] !== EstadoNuvem.obter(k).sha);
+        const nomes = ks => ks.map(k => ITENS_NUVEM[k].nome).join(' e ');
+        let texto, classe;
+        if (nuvemOcupada) {
+            texto = '☁ Sincronizando com o GitHub…'; classe = '';
+        } else if (nuvemErro) {
+            texto = '⚠ Dados online indisponíveis: ' + nuvemErro; classe = 'aviso';
+        } else if (conflitos.length) {
+            texto = `⚠ A ${nomes(conflitos)} online mudou em outra máquina e esta tem alterações não salvas.`; classe = 'aviso';
+        } else if (pendentes.length) {
+            texto = `● Alterações não salvas online: ${nomes(pendentes)}.`; classe = 'aviso';
+        } else if (chaves.every(k => !shaOnline[k])) {
+            texto = '☁ Nada salvo online ainda.'; classe = '';
+        } else {
+            texto = '☁ Sincronizado com o GitHub.'; classe = 'ok';
+        }
+        nuvemStatus.innerText = texto;
+        nuvemStatus.className = 'nuvem-status ' + classe;
+        btnNuvemSalvar.disabled = nuvemOcupada || !pendentes.length;
+        btnNuvemToken.title = Nuvem.token()
+            ? 'Token do GitHub cadastrado neste navegador (clique para trocar ou remover)'
+            : 'Cadastrar o token do GitHub que permite salvar online';
+        btnNuvemToken.classList.toggle('ativo', !!Nuvem.token());
+    }
+    EstadoNuvem.aoMudar(renderizarNuvem);
+
+    /** Ao abrir: traz do GitHub o que mudou online, sem apagar alterações locais não enviadas. */
+    async function sincronizarAoAbrir() {
+        nuvemOcupada = true;
+        nuvemErro = '';
+        renderizarNuvem();
+        for (const [chave, item] of Object.entries(ITENS_NUVEM)) {
+            try {
+                const remoto = await Nuvem.ler(item.caminho);
+                shaOnline[chave] = remoto ? remoto.sha : null;
+                let est = EstadoNuvem.obter(chave);
+                if (!est) {
+                    // Primeira vez neste navegador: o que já existe localmente conta como não enviado
+                    est = { sha: null, sujo: !item.vazio() };
+                    EstadoNuvem.definir(chave, est);
+                }
+                if (!remoto || remoto.sha === est.sha) continue;
+                if (!est.sujo || item.vazio()) {
+                    item.aplicar(remoto.texto);
+                    EstadoNuvem.definir(chave, { sha: remoto.sha, sujo: false });
+                }
+            } catch (err) {
+                nuvemErro = mensagemErro(err);
+            }
+        }
+        nuvemOcupada = false;
+        renderizarNuvem();
+    }
+
+    function pedirToken() {
+        const atual = Nuvem.token();
+        const t = prompt(
+            'Token do GitHub para salvar online (fica guardado só neste navegador).\n\n' +
+            'Para criar: github.com/settings/personal-access-tokens/new → "Only select repositories" = ' +
+            Nuvem.REPO + ' → Permissions → Contents = "Read and write".\n\n' +
+            (atual ? 'Deixe em branco e clique OK para remover o token deste navegador.' : 'Cole o token:'),
+            '');
+        if (t === null) return false;
+        Nuvem.definirToken(t.trim());
+        renderizarNuvem();
+        return !!t.trim();
+    }
+
+    btnNuvemToken.addEventListener('click', pedirToken);
+
+    btnNuvemSalvar.addEventListener('click', async () => {
+        if (!Nuvem.token() && !pedirToken()) return;
+        nuvemOcupada = true;
+        renderizarNuvem();
+        for (const [chave, item] of Object.entries(ITENS_NUVEM)) {
+            const est = EstadoNuvem.obter(chave) || {};
+            if (!est.sujo) continue;
+            const msg = `Atualiza ${item.nome} (salvo pelo app)`;
+            try {
+                let sha;
+                try {
+                    sha = await Nuvem.gravar(item.caminho, item.serializar(), est.sha, msg);
+                } catch (err) {
+                    if (err.status !== 409 && err.status !== 422) throw err;
+                    // Outra máquina salvou depois da última sincronização desta
+                    if (confirm(`A ${item.nome} online foi alterada em outra máquina depois que esta sincronizou.\n\n` +
+                                `OK: substituir a versão online pela desta máquina.\nCancelar: decidir depois.`)) {
+                        const remoto = await Nuvem.ler(item.caminho);
+                        sha = await Nuvem.gravar(item.caminho, item.serializar(), remoto && remoto.sha, msg);
+                    } else if (confirm(`Então descartar as alterações desta máquina e carregar a ${item.nome} online?`)) {
+                        const remoto = await Nuvem.ler(item.caminho);
+                        if (remoto) {
+                            item.aplicar(remoto.texto);
+                            shaOnline[chave] = remoto.sha;
+                            EstadoNuvem.definir(chave, { sha: remoto.sha, sujo: false });
+                        }
+                        continue;
+                    } else {
+                        continue;
+                    }
+                }
+                shaOnline[chave] = sha;
+                EstadoNuvem.definir(chave, { sha, sujo: false });
+            } catch (err) {
+                alert(`Não foi possível salvar a ${item.nome} online: ${mensagemErro(err)}`);
+                if (err.status === 401 || err.status === 403 || err.status === 404) break;
+            }
+        }
+        nuvemErro = '';
+        nuvemOcupada = false;
+        renderizarNuvem();
+    });
+
+    sincronizarAoAbrir();
 });

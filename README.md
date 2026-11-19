@@ -25,6 +25,17 @@ ou mais). No modo de leitura *Base de referências*, cada pixel vai para a class
 de todas as classes ficam como "incertos" (roxo na máscara) e não entram nas contas. A base fica no navegador
 e pode ser exportada/importada em JSON. Se a base mudar, refaça a curva de calibração desse modo.
 
+**Dados online (qualquer máquina):** a base de referências e a calibração também ficam no próprio repositório,
+em `dados/base_referencias.json` e `dados/calibracao.json`. Ao abrir o site, o app baixa a versão online
+(sem login) e só não a aplica se este navegador tiver alterações ainda não enviadas. Para enviar, use
+**☁ Salvar online** no topo da página; cada envio vira um commit, então o histórico do Git guarda todas as versões.
+Salvar exige um token do GitHub, cadastrado uma vez por navegador no botão **🔑 Token**:
+em *github.com/settings/personal-access-tokens/new*, crie um *fine-grained token* com
+*Repository access* = **Only select repositories** → `AguiaLTDA/analiseIM` e
+*Permissions → Repository → Contents* = **Read and write**. O token fica só no navegador onde foi colado;
+em computador compartilhado, remova-o ao terminar (botão 🔑, deixar em branco). Os dados ficam públicos,
+como o resto do repositório. Se duas máquinas salvarem a mesma coisa, o app avisa e pergunta qual versão manter.
+
 **Testar localmente:** o `index.html` precisa ser aberto por um servidor (clicar duas vezes no arquivo bloqueia a
 leitura dos pixels). Qualquer servidor estático serve, por exemplo `python -m http.server` na pasta do projeto,
 ou o próprio `app.py`.

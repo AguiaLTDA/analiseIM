@@ -430,3 +430,28 @@ th {
     color: #065f46;
     background: #ecfdf5;
 }
+
+/* Dados online (GitHub) */
+.nuvem {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+.nuvem .btn {
+    padding: 8px 12px;
+    font-size: 0.85rem;
+    width: auto;
+}
+
+.nuvem-status {
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    max-width: 420px;
+}
+
+.nuvem-status.ok { color: #047857; }
+.nuvem-status.aviso { color: #b45309; }
