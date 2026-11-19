@@ -540,7 +540,7 @@
     }
 
     // -----------------------------------------------------------------------
-    // Calibração (curva C medido -> fração mássica real)
+    // Calibração (curva fração medida na ROI -> fração mássica real)
     // -----------------------------------------------------------------------
 
     /** Fração de compósito (%) numa amostra homogênea: ROI inteira, sem perfil por linha. */
@@ -573,13 +573,30 @@
         for (let i = 0; i < n; i++) { ssRes += (ys[i] - (a + b * xs[i])) ** 2; ssTot += (ys[i] - my) ** 2; }
         const r2 = ssTot > 0 ? 1 - ssRes / ssTot : null;
         const sigma = n > 2 ? Math.sqrt(ssRes / (n - 2)) : null;
+
+        // LD/LQ pela forma clássica: sinal medido em função da concentração real,
+        // x = a' + b'·y. Com s_x (desvio residual do sinal), LD = 3·s_x/b' e
+        // LQ = 10·s_x/b' ficam em % mássico, a mesma unidade da fração real.
+        let ld = null, lq = null;
+        let syy = 0;
+        for (let i = 0; i < n; i++) syy += (ys[i] - my) ** 2;
+        if (n > 2 && syy > 0) {
+            const bInv = sxy / syy, aInv = mx - bInv * my;
+            let ssResX = 0;
+            for (let i = 0; i < n; i++) ssResX += (xs[i] - (aInv + bInv * ys[i])) ** 2;
+            const sx = Math.sqrt(ssResX / (n - 2));
+            if (bInv > 0) {
+                ld = arredondar(3 * sx / bInv, 3);
+                lq = arredondar(10 * sx / bInv, 3);
+            }
+        }
         return {
             a: arredondar(a, 5),
             b: arredondar(b, 5),
             r2: r2 !== null ? arredondar(r2, 5) : null,
             sigma: sigma !== null ? arredondar(sigma, 4) : null,
-            ld: sigma !== null && b !== 0 ? arredondar(3 * sigma / b, 3) : null,
-            lq: sigma !== null && b !== 0 ? arredondar(10 * sigma / b, 3) : null,
+            ld,
+            lq,
             n,
             atualizado_em: new Date().toISOString().slice(0, 19) + '+00:00',
         };
@@ -810,7 +827,7 @@
         const nomeModo = modo === 'uv' ? 'uv' : 'luminosidade';
         const eix = desenharEixos(ctx, { x: 80, y: 40, w: 490, h: 370 }, ex, ey, {
             titulo: `Curva de calibração — modo ${nomeModo}`,
-            rotuloX: 'C(z) medido pela plataforma (% da área de sólidos)',
+            rotuloX: 'Fração medida na ROI (% da área de sólidos)',
             rotuloY: 'Fração mássica real (%)',
         });
         desenharLinha(ctx, [0, xMax], yReta, eix.px, eix.py, '#8b0000', 1.6);

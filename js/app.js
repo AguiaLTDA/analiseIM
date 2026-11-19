@@ -590,7 +590,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // -----------------------------------------------------------------
-    // Aba 2: Calibração (curva C(z) medido -> fração mássica real)
+    // Aba 2: Calibração (curva fração medida na ROI -> fração mássica real)
     // -----------------------------------------------------------------
     const calModo = document.getElementById('calModo');
     const calFracaoReal = document.getElementById('calFracaoReal');

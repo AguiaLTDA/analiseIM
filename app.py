@@ -146,7 +146,7 @@ async def analisar_roi(
 
 
 # ---------------------------------------------------------------------------
-# Calibração (curva C_medido -> fração mássica real)
+# Calibração (curva fração medida na ROI -> fração mássica real)
 # ---------------------------------------------------------------------------
 
 def carregar_calibracao() -> dict:
@@ -263,8 +263,16 @@ def calibracao_ajustar(modo: str = Form(...)):
     r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else None
     n = len(pontos)
     sigma = float(np.sqrt(ss_res / (n - 2))) if n > 2 else None
-    ld = round(3.0 * sigma / b, 3) if sigma is not None and b != 0 else None
-    lq = round(10.0 * sigma / b, 3) if sigma is not None and b != 0 else None
+    # LD/LQ pela forma clássica: sinal medido em função da concentração real,
+    # x = a' + b'·y. Com s_x (desvio residual do sinal), LD = 3·s_x/b' e
+    # LQ = 10·s_x/b' ficam em % mássico, a mesma unidade da fração real.
+    ld = lq = None
+    if n > 2 and np.ptp(ys) > 0:
+        b_inv, a_inv = np.polyfit(ys, xs, 1)
+        s_x = float(np.sqrt(np.sum((xs - (a_inv + b_inv * ys)) ** 2) / (n - 2)))
+        if b_inv > 0:
+            ld = round(3.0 * s_x / float(b_inv), 3)
+            lq = round(10.0 * s_x / float(b_inv), 3)
 
     coef = {
         "a": round(float(a), 5),
@@ -472,7 +480,7 @@ def gerar_grafico_calibracao(xs: np.ndarray, ys: np.ndarray, a: float, b: float,
     xr = np.linspace(0, max(xs.max(), 1e-6) * 1.15, 50)
     ax.plot(xr, a + b * xr, color="#8b0000", lw=1.6,
             label=f"y = {a:.3f} + {b:.3f}x")
-    ax.set_xlabel("C(z) medido pela plataforma (% da área de sólidos)")
+    ax.set_xlabel("Fração medida na ROI (% da área de sólidos)")
     ax.set_ylabel("Fração mássica real (%)")
     ax.set_title(f"Curva de calibração — modo {modo}")
     ax.grid(alpha=0.3)
