@@ -379,3 +379,10 @@ th {
     font-weight: 700;
     padding: 0 6px;
 }
+
+.stat-card .sub-valor {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    margin-top: 4px;
+    line-height: 1.3;
+}

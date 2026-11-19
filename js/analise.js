@@ -15,7 +15,8 @@
     const DELTA_L_MIN_GAS = 10.0;         // separação mínima de L* para aceitar um cluster de gás
     const JANELA_SUAVIZACAO_MM = 2.0;     // altura da janela móvel do perfil C(z)
     const FRACAO_SOLIDOS_MIN = 0.20;      // abaixo disso a cota é considerada sem leito (C = null)
-    const ALTURA_AMOSTRA_LACEY_MM = 5.0;  // altura de cada amostra usada no Índice de Lacey
+    const TAMANHO_AMOSTRA_LACEY_MM = 5.0; // tamanho padrão das amostras do Índice de Lacey
+    const AMOSTRAGENS_LACEY = ['faixas', 'grade'];
     const D_PARTICULA_MM = 1.0;           // diâmetro da areia (nº de partículas por amostra)
     const N_LINHAS_TABELA = 25;
 
@@ -393,32 +394,67 @@
         return { zMm, cPct, gasPct };
     }
 
-    function indiceLacey(seg, mmPorPx) {
+    /**
+     * Divide a ROI nas amostras do Índice de Lacey (retângulos em px da ROI):
+     *   'faixas': faixas horizontais com a largura inteira da ROI e altura = tamanho
+     *             (só capta segregação vertical);
+     *   'grade':  quadrados tamanho x tamanho (capta segregação vertical e lateral).
+     * Sobras nas bordas menores que uma amostra inteira não entram.
+     */
+    function gerarAmostrasLacey(w, h, ladoPx, amostragem) {
+        const amostras = [];
+        for (let y = 0; y + ladoPx <= h; y += ladoPx) {
+            if (amostragem === 'grade') {
+                for (let x = 0; x + ladoPx <= w; x += ladoPx) amostras.push({ x, y, w: ladoPx, h: ladoPx });
+            } else {
+                amostras.push({ x: 0, y, w, h: ladoPx });
+            }
+        }
+        return amostras;
+    }
+
+    /**
+     * M = (σ0² - σ²) / (σ0² - σR²)
+     *   σ²  : variância da fração de compósito entre as amostras
+     *   σ0² = p(1-p)      : estado totalmente segregado
+     *   σR² = p(1-p) / n  : mistura aleatória perfeita, n = partículas por amostra
+     * Amostras com sólidos < FRACAO_SOLIDOS_MIN da sua área (topo livre, zonas excluídas) são descartadas.
+     * Retorna { M (ou null), amostras (com .usada), nUsadas, ladoMm }.
+     */
+    function indiceLacey(seg, mmPorPx, { amostragem = 'faixas', tamanhoMm = TAMANHO_AMOSTRA_LACEY_MM } = {}) {
         const { fases, width: w, height: h } = seg;
-        const alturaAmostra = Math.max(2, Math.round(ALTURA_AMOSTRA_LACEY_MM / mmPorPx));
+        const ladoPx = Math.max(2, Math.round(tamanhoMm / mmPorPx));
+        const amostras = gerarAmostrasLacey(w, h, ladoPx, amostragem);
         const fracoes = [], nParticulas = [];
-        for (let inicio = 0; inicio + alturaAmostra <= h; inicio += alturaAmostra) {
+        amostras.forEach(a => {
             let nComp = 0, nAreia = 0;
-            for (let i = inicio * w; i < (inicio + alturaAmostra) * w; i++) {
-                if (fases[i] === 0) nComp++; else if (fases[i] === 1) nAreia++;
+            for (let y = a.y; y < a.y + a.h; y++) {
+                for (let i = y * w + a.x; i < y * w + a.x + a.w; i++) {
+                    if (fases[i] === 0) nComp++; else if (fases[i] === 1) nAreia++;
+                }
             }
             const nSolidos = nComp + nAreia;
-            if (nSolidos < FRACAO_SOLIDOS_MIN * alturaAmostra * w) continue;
-            fracoes.push(nComp / nSolidos);
+            a.usada = nSolidos >= FRACAO_SOLIDOS_MIN * a.w * a.h;
+            if (!a.usada) return;
+            a.fracao = nComp / nSolidos;
+            fracoes.push(a.fracao);
             nParticulas.push(Math.max(1, nSolidos * mmPorPx * mmPorPx / (D_PARTICULA_MM * D_PARTICULA_MM)));
-        }
-        if (fracoes.length < 2) return null;
+        });
+
+        const resultado = { M: null, amostras, nUsadas: fracoes.length, ladoMm: ladoPx * mmPorPx };
+        if (fracoes.length < 2) return resultado;
         const m = fracoes.length;
         const p = fracoes.reduce((s, v) => s + v, 0) / m;
         const sigma0 = p * (1 - p);
         const sigmaR = sigma0 / (nParticulas.reduce((s, v) => s + v, 0) / m);
-        if (sigma0 - sigmaR <= 0) return null;
+        if (sigma0 - sigmaR <= 0) return resultado;
         const variancia = fracoes.reduce((s, v) => s + (v - p) ** 2, 0) / (m - 1);
         const M = (sigma0 - variancia) / (sigma0 - sigmaR);
-        return arredondar(Math.min(1, Math.max(0, M)), 4);
+        resultado.M = arredondar(Math.min(1, Math.max(0, M)), 4);
+        return resultado;
     }
 
-    function calcularEstatisticas(seg, perfil, mmPorPx) {
+    function calcularEstatisticas(seg, perfil, mmPorPx, lacey) {
         const validos = Array.from(perfil.cPct).filter(v => !Number.isNaN(v));
         const n = validos.length;
         const media = n ? validos.reduce((s, v) => s + v, 0) / n : 0;
@@ -430,7 +466,9 @@
             desvio_comp: arredondar(desvio, 3),
             max_comp: n ? arredondar(Math.max(...validos), 3) : 0,
             altura_total_mm: arredondar(seg.height * mmPorPx, 1),
-            lacey_index: indiceLacey(seg, mmPorPx),
+            lacey_index: lacey.M,
+            lacey_n_amostras: lacey.nUsadas,
+            lacey_tamanho_mm: arredondar(lacey.ladoMm, 2),
             excluido_pct: arredondar(100 * nExcluidos / seg.fases.length, 2),
         };
     }
@@ -458,17 +496,24 @@
     /**
      * Análise completa de uma ROI.
      * coef: curva de calibração do modo ({a, b, ...}) ou null.
+     * opcoesLacey: { amostragem: 'faixas' | 'grade', tamanhoMm }.
      */
-    function analisarROI(img, larguraMm, modo, coef) {
+    function analisarROI(img, larguraMm, modo, coef, opcoesLacey = {}) {
         if (!MODOS.includes(modo)) throw new Error(`Modo de leitura inválido: ${modo}.`);
         if (!(larguraMm > 0)) throw new Error('A largura da coluna deve ser positiva.');
         if (img.width < 20 || img.height < 20) throw new Error('ROI muito pequena ou fora da imagem.');
+        const amostragem = opcoesLacey.amostragem || 'faixas';
+        const tamanhoMm = opcoesLacey.tamanhoMm !== undefined ? opcoesLacey.tamanhoMm : TAMANHO_AMOSTRA_LACEY_MM;
+        if (!AMOSTRAGENS_LACEY.includes(amostragem)) throw new Error(`Amostragem inválida: ${amostragem}.`);
+        if (!(tamanhoMm > 0)) throw new Error('O tamanho da amostra do Índice de Lacey deve ser positivo.');
 
         // Escala: assume-se que a largura da ROI corresponde à largura interna da coluna
         const mmPorPx = larguraMm / img.width;
         const seg = segmentar(img, modo);
         const perfil = calcularPerfil(seg, mmPorPx);
-        const stats = calcularEstatisticas(seg, perfil, mmPorPx);
+        const lacey = indiceLacey(seg, mmPorPx, { amostragem, tamanhoMm });
+        const stats = calcularEstatisticas(seg, perfil, mmPorPx, lacey);
+        stats.lacey_amostragem = amostragem;
 
         stats.calibrado = !!coef;
         let cMassico = null;
@@ -483,6 +528,7 @@
             seg,
             perfil,
             stats,
+            amostrasLacey: lacey.amostras,
             tabela: amostrarPerfil(perfil, cMassico),
             perfil_completo: {
                 z_mm: paraLista(perfil.zMm, 2),
@@ -546,8 +592,9 @@
     /**
      * Original | segmentação colorida, lado a lado, como JPEG (data URL).
      * Zonas de exclusão aparecem na segmentação em cinza hachurado, sem cor de fase.
+     * amostrasLacey (opcional): contorno branco nas amostras usadas no Índice de Lacey.
      */
-    function gerarOverlay(img, seg) {
+    function gerarOverlay(img, seg, amostrasLacey) {
         const { width: w, height: h } = img;
         const canvas = document.createElement('canvas');
         canvas.width = 2 * w + 4;
@@ -571,7 +618,21 @@
             }
         }
         ctx.putImageData(saida, 0, 0);
+        if (amostrasLacey) {
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+            ctx.lineWidth = 1;
+            amostrasLacey.filter(a => a.usada).forEach(a => {
+                ctx.strokeRect(w + 4 + a.x + 0.5, a.y + 0.5, a.w - 1, a.h - 1);
+            });
+        }
         return canvas.toDataURL('image/jpeg', 0.9);
+    }
+
+    /** Ex.: "grade 5 × 5 mm, 271 amostras" ou "faixas de 5 mm, 23 amostras". */
+    function descreverAmostragem(stats) {
+        const t = String(stats.lacey_tamanho_mm).replace('.', ',');
+        const tipo = stats.lacey_amostragem === 'grade' ? `grade ${t} × ${t} mm` : `faixas de ${t} mm`;
+        return `${tipo}, ${stats.lacey_n_amostras} amostras`;
     }
 
     /** Valores "redondos" para marcas de eixo. */
@@ -705,7 +766,7 @@
         ctx.font = '13px sans-serif';
         ctx.textAlign = 'center';
         const lacey = stats.lacey_index;
-        ctx.fillText(`Índice de Lacey M = ${lacey !== null ? lacey : 'n/d'}`, W / 2, 22);
+        ctx.fillText(`Índice de Lacey M = ${lacey !== null ? lacey : 'n/d'}  (${descreverAmostragem(stats)})`, W / 2, 22);
 
         const eixC = desenharEixos(ctx, caixaC, ex, ey, {
             titulo: 'Perfil de concentração C(z)',
@@ -771,6 +832,7 @@
         gerarGrafico,
         gerarGraficoCalibracao,
         gerarOverlay,
+        descreverAmostragem,
         // expostas para testes
         _interno: { definirTentativas: n => { KMEANS_TENTATIVAS = n; }, desfoqueGaussiano, rgbParaLab8, segmentar, calcularPerfil, indiceLacey, somaMovel },
     };

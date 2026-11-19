@@ -488,13 +488,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const modo = modoLeitura.value;
         const larguraMm = parseFloat(document.getElementById('colLargura').value);
+        const opcoesLacey = {
+            amostragem: document.getElementById('laceyAmostragem').value,
+            tamanhoMm: parseFloat(document.getElementById('laceyTamanho').value),
+        };
 
         executarDepoisDePintar(() => {
             const pixels = seletor.extrairPixelsROI();
             const coef = Calibracao.carregar()[modo].coef;
-            const resultado = Analise.analisarROI(pixels, larguraMm, modo, coef);
+            const resultado = Analise.analisarROI(pixels, larguraMm, modo, coef, opcoesLacey);
             resultado.plot = Analise.gerarGrafico(resultado.perfil, resultado.stats);
-            resultado.overlay = Analise.gerarOverlay(pixels, resultado.seg);
+            resultado.overlay = Analise.gerarOverlay(pixels, resultado.seg, resultado.amostrasLacey);
             return resultado;
         })
         .then(resultado => {
@@ -516,6 +520,7 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('valMedia').innerText = data.stats.media_comp + ' %';
         document.getElementById('valDesvio').innerText = data.stats.desvio_comp + ' %';
         document.getElementById('valLacey').innerText = data.stats.lacey_index !== null ? data.stats.lacey_index : 'n/d';
+        document.getElementById('valLaceyInfo').innerText = Analise.descreverAmostragem(data.stats);
         document.getElementById('valAltura').innerText = data.stats.altura_total_mm + ' mm';
         document.getElementById('valMassica').innerText = data.stats.calibrado
             ? data.stats.media_comp_massica + ' %'
