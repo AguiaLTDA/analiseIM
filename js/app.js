@@ -745,6 +745,102 @@ document.addEventListener('DOMContentLoaded', () => {
         reader.readAsDataURL(file);
     });
 
+    // Densidades dos sólidos (modelo área -> massa); lembradas neste navegador
+    const CHAVE_DENSIDADES = 'analiseIM.densidades.v1';
+    const inputRhoComp = document.getElementById('rhoComp');
+    const inputRhoAreia = document.getElementById('rhoAreia');
+    try {
+        const salvo = JSON.parse(localStorage.getItem(CHAVE_DENSIDADES) || 'null');
+        if (salvo && salvo.rhoComp > 0) inputRhoComp.value = salvo.rhoComp;
+        if (salvo && salvo.rhoAreia > 0) inputRhoAreia.value = salvo.rhoAreia;
+    } catch (e) { /* usa os valores padrão do HTML */ }
+    [inputRhoComp, inputRhoAreia].forEach(inp => inp.addEventListener('change', () => {
+        try {
+            localStorage.setItem(CHAVE_DENSIDADES, JSON.stringify({
+                rhoComp: parseFloat(inputRhoComp.value), rhoAreia: parseFloat(inputRhoAreia.value),
+            }));
+        } catch (e) { /* fica só nesta sessão */ }
+    }));
+
+    // Formato e dimensões das partículas (filtro de tamanho e Índice de Lacey); lembrados neste navegador
+    const CHAVE_PARTICULAS = 'analiseIM.particulas.v1';
+    const linhasParticula = {};
+    document.querySelectorAll('.filtro-tamanho .particula').forEach(linha => {
+        linhasParticula[linha.dataset.material] = linha;
+    });
+    const chkFiltroTamanho = document.getElementById('usarFiltroTamanho');
+
+    /** { formato, d, x, y, z } lidos da linha do material. */
+    function lerParticula(material) {
+        const linha = linhasParticula[material];
+        const p = { formato: linha.querySelector('select.formato').value };
+        linha.querySelectorAll('input.dim').forEach(inp => { p[inp.dataset.dim] = parseFloat(inp.value); });
+        return p;
+    }
+
+    try {
+        const salvo = JSON.parse(localStorage.getItem(CHAVE_PARTICULAS) || 'null');
+        if (salvo) {
+            Object.keys(linhasParticula).forEach(material => {
+                const p = salvo[material];
+                if (!p) return;
+                const linha = linhasParticula[material];
+                if (Analise.FORMATOS.includes(p.formato)) linha.querySelector('select.formato').value = p.formato;
+                linha.querySelectorAll('input.dim').forEach(inp => {
+                    if (p[inp.dataset.dim] > 0) inp.value = p[inp.dataset.dim];
+                });
+            });
+            if (typeof salvo.ativo === 'boolean') chkFiltroTamanho.checked = salvo.ativo;
+        }
+    } catch (e) { /* usa os valores padrão do HTML */ }
+
+    /** { pebd, areia, ativo, dMinMm }; dMinMm = 0 com o filtro desligado ou partículas inválidas. */
+    function opcoesTamanho() {
+        const pebd = lerParticula('pebd'), areia = lerParticula('areia');
+        const ativo = chkFiltroTamanho.checked;
+        const dPebd = Analise.diametroEquivalente(pebd), dAreia = Analise.diametroEquivalente(areia);
+        const ok = dPebd > dAreia && dAreia > 0;
+        const dMinMm = ativo && ok ? Math.round(Analise.limiteTamanho(pebd, areia) * 1000) / 1000 : 0;
+        return { pebd, areia, ativo, ok, dPebd, dAreia, dMinMm };
+    }
+
+    function atualizarParticulas() {
+        Object.values(linhasParticula).forEach(linha => {
+            linha.classList.toggle('xyz', linha.querySelector('select.formato').value !== 'esferica');
+        });
+        const t = opcoesTamanho();
+        const num = v => v.toFixed(2).replace('.', ',');
+        const info = document.getElementById('limiteTamanhoInfo');
+        const eq = t.dPebd > 0 && t.dAreia > 0 ? ` (Ø equivalente: PEBD ${num(t.dPebd)} · areia ${num(t.dAreia)} mm)` : '';
+        if (!t.ativo) info.innerText = 'filtro desligado' + eq;
+        else if (!t.ok) info.innerText = '⚠ o PEBD precisa ser maior que a areia (filtro inativo)' + eq;
+        else info.innerText = `manchas de PEBD menores que Ø ${num(t.dMinMm)} mm viram areia` + eq;
+        try {
+            localStorage.setItem(CHAVE_PARTICULAS, JSON.stringify({ pebd: t.pebd, areia: t.areia, ativo: t.ativo }));
+        } catch (e) { /* fica só nesta sessão */ }
+    }
+    document.querySelectorAll('.filtro-tamanho select, .filtro-tamanho input').forEach(el => {
+        el.addEventListener(el.type === 'number' ? 'input' : 'change', atualizarParticulas);
+    });
+    atualizarParticulas();
+
+    /** Os padrões do modo foram medidos com outro filtro de tamanho? (pontos antigos = sem filtro) */
+    function calibracaoComOutroFiltro(modo, dMinMm) {
+        return Calibracao.carregar()[modo].pontos.some(p => Math.abs((p.filtro_mm || 0) - dMinMm) > 1e-3);
+    }
+
+    /**
+     * Densidades atuais + fator k ajustado nos padrões do modo (k = 1 sem padrões).
+     * Retorna null se as densidades forem inválidas.
+     */
+    function modeloDensidades(modo) {
+        const rhoComp = parseFloat(inputRhoComp.value), rhoAreia = parseFloat(inputRhoAreia.value);
+        if (!(rhoComp > 0 && rhoAreia > 0)) return null;
+        const pontos = Calibracao.carregar()[modo].pontos;
+        const ajuste = pontos.length ? Analise.ajustarFatorK(pontos, rhoComp, rhoAreia) : null;
+        return { rhoComp, rhoAreia, k: ajuste ? ajuste.k : 1, ajuste };
+    }
+
     // Análise executada no próprio navegador
     btnAnalisar.addEventListener('click', () => {
         if (!seletor.roiValida()) return;
@@ -761,11 +857,17 @@ document.addEventListener('DOMContentLoaded', () => {
             amostragem: document.getElementById('laceyAmostragem').value,
             tamanhoMm: parseFloat(document.getElementById('laceyTamanho').value),
         };
+        const tamanhos = opcoesTamanho();
+        if (tamanhos.dAreia > 0) opcoesLacey.dParticulaMm = tamanhos.dAreia;
 
         executarDepoisDePintar(() => {
             const pixels = seletor.extrairPixelsROI();
             const coef = Calibracao.carregar()[modo].coef;
-            const resultado = Analise.analisarROI(pixels, larguraMm, modo, coef, opcoesLacey);
+            const densidades = modeloDensidades(modo);
+            const resultado = Analise.analisarROI(pixels, larguraMm, modo, coef, opcoesLacey, densidades,
+                                                  { dMinMm: tamanhos.dMinMm });
+            resultado.ajusteK = densidades ? densidades.ajuste : null;
+            resultado.calibOutroFiltro = calibracaoComOutroFiltro(modo, tamanhos.dMinMm);
             resultado.plot = Analise.gerarGrafico(resultado.perfil, resultado.stats);
             resultado.overlay = Analise.gerarOverlay(pixels, resultado.seg, resultado.amostrasLacey);
             return resultado;
@@ -787,6 +889,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function exibirResultados(data) {
         // Atualiza Cards de Métricas
         document.getElementById('valMedia').innerText = data.stats.media_comp + ' %';
+        document.getElementById('valMediaInfo').innerText = `média das cotas: ${data.stats.media_perfil} %`;
         document.getElementById('valDesvio').innerText = data.stats.desvio_comp + ' %';
         document.getElementById('valLacey').innerText = data.stats.lacey_index !== null ? data.stats.lacey_index : 'n/d';
         document.getElementById('valLaceyInfo').innerText = Analise.descreverAmostragem(data.stats);
@@ -794,6 +897,26 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('valMassica').innerText = data.stats.calibrado
             ? data.stats.media_comp_massica + ' %'
             : 'não calibrado';
+        const avisoFiltro = data.calibOutroFiltro ? '⚠ padrões medidos com outro filtro de tamanho: refaça-os' : '';
+        document.getElementById('valMassicaInfo').innerText = [
+            data.stats.abaixo_ld ? '⚠ abaixo do limite de detecção da curva' : '',
+            data.stats.calibrado ? avisoFiltro : '',
+        ].filter(Boolean).join(' · ');
+        const temDensidade = data.stats.media_comp_densidade !== undefined;
+        document.getElementById('valDensidade').innerText = temDensidade
+            ? data.stats.media_comp_densidade + ' %' : 'densidades inválidas';
+        document.getElementById('valDensidadeInfo').innerText = !temDensidade ? ''
+            : data.ajusteK
+                ? `k = ${data.stats.fator_k} (ajustado em ${data.ajusteK.n} padr${data.ajusteK.n > 1 ? 'ões' : 'ão'})` +
+                  (avisoFiltro ? ' · ' + avisoFiltro : '')
+                : 'k = 1 (sem padrões: só densidades)';
+        const st = data.stats;
+        document.getElementById('valFiltro').innerText = st.filtro_d_min_mm > 0
+            ? `${st.manchas_pebd} manchas de PEBD` : 'desligado';
+        document.getElementById('valFiltroInfo').innerText = st.filtro_d_min_mm > 0
+            ? `${st.manchas_removidas} manchas < Ø ${st.filtro_d_min_mm} mm → areia ` +
+              `(${st.filtrado_pct} % da ROI, laranja na máscara) · escala ${st.px_por_mm} px/mm`
+            : '';
         document.getElementById('valExcluido').innerText = data.stats.excluido_pct + ' %';
         document.getElementById('valIncerto').innerText = data.stats.incerto_pct > 0
             ? `+ ${data.stats.incerto_pct} % incerto (fora da base, em roxo na máscara)` : '';
@@ -808,16 +931,16 @@ document.addEventListener('DOMContentLoaded', () => {
         const corpo = document.getElementById('tabelaCorpo');
         corpo.innerHTML = '';
         if (!data.tabela.length) {
-            corpo.innerHTML = '<tr><td colspan="4" style="color: var(--text-muted);">Nenhuma cota com leito identificada na ROI.</td></tr>';
+            corpo.innerHTML = '<tr><td colspan="5" style="color: var(--text-muted);">Nenhuma cota com leito identificada na ROI.</td></tr>';
         }
+        const formatar = v => (v !== null && v !== undefined ? v.toFixed(2) + '%' : '-');
         data.tabela.forEach(row => {
-            const massico = row.c_pct_massico !== null && row.c_pct_massico !== undefined
-                ? row.c_pct_massico.toFixed(2) + '%' : '-';
             const tr = document.createElement('tr');
             tr.innerHTML = `
                 <td><b>${row.z_mm.toFixed(1)}</b></td>
                 <td style="color: #8b0000; font-weight: 600;">${row.c_pct.toFixed(2)}%</td>
-                <td style="color: #1e3a8a; font-weight: 600;">${massico}</td>
+                <td style="color: #1e3a8a; font-weight: 600;">${formatar(row.c_pct_massico)}</td>
+                <td style="color: #0d9488; font-weight: 600;">${formatar(row.c_pct_densidade)}</td>
                 <td style="color: #0d9488;">${row.gas_pct.toFixed(1)}%</td>
             `;
             corpo.appendChild(tr);
@@ -850,12 +973,11 @@ document.addEventListener('DOMContentLoaded', () => {
     btnDownloadCSV.addEventListener('click', () => {
         if (!resultadoGlobal) return;
         const full = resultadoGlobal.perfil_completo;
-        let csvContent = 'Cota_z_mm;Concentracao_Comp_pct;Concentracao_Massica_Calibrada_pct;Fracao_Gas_pct\n';
+        let csvContent = 'Cota_z_mm;Concentracao_Comp_pct;Concentracao_Massica_Calibrada_pct;Concentracao_Massica_Densidades_pct;Fracao_Gas_pct\n';
+        const campo = v => (v !== null ? v : '');
         for (let i = 0; i < full.z_mm.length; i++) {
-            const c = full.c_pct[i] !== null ? full.c_pct[i] : '';
-            const m = full.c_pct_massico[i] !== null ? full.c_pct_massico[i] : '';
-            const g = full.gas_pct[i] !== null ? full.gas_pct[i] : '';
-            csvContent += `${full.z_mm[i]};${c};${m};${g}\n`;
+            csvContent += `${full.z_mm[i]};${campo(full.c_pct[i])};${campo(full.c_pct_massico[i])};` +
+                          `${campo(full.c_pct_densidade[i])};${campo(full.gas_pct[i])}\n`;
         }
         baixarArquivo(csvContent, 'perfil_roi_concentracao.csv', 'text/csv;charset=utf-8;');
     });
@@ -941,11 +1063,15 @@ document.addEventListener('DOMContentLoaded', () => {
         btnCalAdicionar.disabled = true;
         const modo = calModo.value;
 
-        executarDepoisDePintar(() => Analise.medirFracaoHomogenea(seletorCal.extrairPixelsROI(), modo))
+        // Mesmo filtro de tamanho da aba Análise; o ponto guarda qual foi usado
+        const dMinMm = opcoesTamanho().dMinMm;
+        const larguraMm = parseFloat(document.getElementById('calLarguraMm').value);
+        executarDepoisDePintar(() => Analise.medirFracaoHomogenea(seletorCal.extrairPixelsROI(), modo, { dMinMm, larguraMm }))
             .then(cMedido => {
                 const pontos = Calibracao.carregar()[modo].pontos.concat({
                     x: Math.round(cMedido * 1000) / 1000,
                     y: Math.round(fracaoReal * 1000) / 1000,
+                    filtro_mm: dMinMm,
                     criado_em: new Date().toISOString().slice(0, 19) + '+00:00',
                 });
                 atualizarPontos(modo, pontos);
@@ -963,7 +1089,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function renderizarPontosCalibracao(pontos, coef) {
         calTabelaPontos.innerHTML = '';
         if (!pontos.length) {
-            calTabelaPontos.innerHTML = '<tr><td colspan="4" style="color: var(--text-muted);">Nenhum ponto cadastrado.</td></tr>';
+            calTabelaPontos.innerHTML = '<tr><td colspan="5" style="color: var(--text-muted);">Nenhum ponto cadastrado.</td></tr>';
         } else {
             pontos.forEach((p, i) => {
                 const tr = document.createElement('tr');
@@ -971,6 +1097,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     <td>${i + 1}</td>
                     <td>${p.x.toFixed(2)}</td>
                     <td>${p.y.toFixed(2)}</td>
+                    <td>${p.filtro_mm ? p.filtro_mm.toFixed(2) + " mm" : "sem filtro"}</td>
                     <td><button class="btn btn-outline" style="padding:4px 10px;font-size:0.75rem;" data-indice="${i}">✕</button></td>
                 `;
                 calTabelaPontos.appendChild(tr);
@@ -1010,7 +1137,15 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('calR2').innerText = coef.r2 !== null ? coef.r2 : '-';
         document.getElementById('calLD').innerText = coef.ld !== null ? coef.ld + ' %' : '-';
         document.getElementById('calLQ').innerText = coef.lq !== null ? coef.lq + ' %' : '-';
-        document.getElementById('calGrafico').src = Analise.gerarGraficoCalibracao(pontos, coef, calModo.value);
+
+        const dens = modeloDensidades(calModo.value);
+        const ajuste = dens && dens.ajuste;
+        document.getElementById('calK').innerText = ajuste ? ajuste.k : '-';
+        document.getElementById('calKInfo').innerText = dens
+            ? `ρ compósito ${dens.rhoComp} · ρ areia ${dens.rhoAreia} g/cm³` : 'densidades inválidas na aba Análise';
+        document.getElementById('calKR2').innerText = ajuste && ajuste.r2 !== null ? ajuste.r2 : '-';
+        document.getElementById('calKRmse').innerText = ajuste ? `erro médio (RMSE): ${ajuste.rmse} % mássico` : '';
+        document.getElementById('calGrafico').src = Analise.gerarGraficoCalibracao(pontos, coef, calModo.value, ajuste ? dens : null);
         document.getElementById('calResultado').style.display = 'block';
     }
 

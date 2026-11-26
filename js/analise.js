@@ -18,7 +18,7 @@
     const FRACAO_SOLIDOS_MIN = 0.20;      // abaixo disso a cota é considerada sem leito (C = null)
     const TAMANHO_AMOSTRA_LACEY_MM = 5.0; // tamanho padrão das amostras do Índice de Lacey
     const AMOSTRAGENS_LACEY = ['faixas', 'grade'];
-    const D_PARTICULA_MM = 1.0;           // diâmetro da areia (nº de partículas por amostra)
+    const D_PARTICULA_MM = 1.0;           // diâmetro padrão da areia (nº de partículas por amostra do Lacey)
     const N_LINHAS_TABELA = 25;
 
     // Modo UV: compósito PEBD fluoresce em verde; areia fica azul; gás aparece escuro
@@ -45,6 +45,7 @@
     // Cores da máscara (RGB): compósito vermelho, areia bege, gás azul (mesmas do favicon)
     const CORES_FASES = [[200, 40, 40], [220, 190, 140], [60, 160, 230]];
     const COR_INCERTO = [150, 60, 200];   // roxo: pixel que não se parece com nenhuma classe
+    const COR_FILTRADO = [245, 150, 30];  // laranja: mancha de compósito pequena demais, contada como areia
 
     // -----------------------------------------------------------------------
     // Utilitários
@@ -174,6 +175,94 @@
             for (let i = 0; i < seg.fases.length; i++) if (img.excluido[i]) seg.fases[i] = FASE_EXCLUIDA;
         }
         return seg;
+    }
+
+    // Geometria das partículas: { formato: 'esferica' | 'eliptica' | 'briquete', d, x, y, z } em mm.
+    // X e Y ficam no plano da imagem (a partícula deitada mostra a maior face); Z é a espessura.
+    const FORMATOS = ['esferica', 'eliptica', 'briquete'];
+
+    function particulaValida(p) {
+        if (!p || !FORMATOS.includes(p.formato)) return false;
+        return p.formato === 'esferica' ? p.d > 0 : p.x > 0 && p.y > 0 && p.z > 0;
+    }
+
+    /** Área projetada na imagem (mm²): círculo, elipse X·Y ou retângulo X·Y. */
+    function areaProjetadaMm2(p) {
+        if (!particulaValida(p)) return 0;
+        if (p.formato === 'esferica') return Math.PI * p.d * p.d / 4;
+        if (p.formato === 'eliptica') return Math.PI * p.x * p.y / 4;
+        return p.x * p.y;
+    }
+
+    /** Volume (mm³): esfera, elipsoide de eixos X, Y, Z ou bloco X·Y·Z. */
+    function volumeMm3(p) {
+        if (!particulaValida(p)) return 0;
+        if (p.formato === 'esferica') return Math.PI * p.d ** 3 / 6;
+        if (p.formato === 'eliptica') return Math.PI * p.x * p.y * p.z / 6;
+        return p.x * p.y * p.z;
+    }
+
+    /** Diâmetro do círculo de mesma área projetada (mm). */
+    function diametroEquivalente(p) {
+        return Math.sqrt(4 * areaProjetadaMm2(p) / Math.PI);
+    }
+
+    /**
+     * Limite de corte do filtro (diâmetro equivalente, mm) entre a partícula de PEBD e a de areia:
+     * média geométrica dos diâmetros equivalentes (equilibra a razão de áreas). 0 se inválido.
+     */
+    function limiteTamanho(pebd, areia) {
+        const dp = diametroEquivalente(pebd), da = diametroEquivalente(areia);
+        return dp > 0 && da > 0 ? Math.sqrt(dp * da) : 0;
+    }
+
+    /**
+     * Filtro de tamanho: manchas de compósito (componentes conexos, vizinhança 8) com área menor
+     * que a de um círculo de diâmetro dMinMm voltam a ser areia. Remove sombras entre grãos e grãos
+     * escuros de areia (menores que o PEBD). Nunca remove manchas grandes: grãos de PEBD encostados
+     * formam uma mancha só. dMinMm <= 0 desliga o filtro.
+     * Marca em seg.filtrado (1 = pixel reclassificado) e devolve
+     * { particulas, removidas, pixelsRemovidos, areaMinPx }.
+     */
+    function filtrarPorTamanho(seg, mmPorPx, dMinMm) {
+        const { fases, width: w, height: h } = seg;
+        const n = w * h;
+        seg.filtrado = new Uint8Array(n);
+        if (!(dMinMm > 0)) return { particulas: null, removidas: 0, pixelsRemovidos: 0, areaMinPx: 0 };
+        const areaMinPx = Math.PI * (dMinMm / 2) ** 2 / (mmPorPx * mmPorPx);
+        const visitado = new Uint8Array(n);
+        const pilha = new Int32Array(n);
+        const comp = new Int32Array(n);
+        let particulas = 0, removidas = 0, pixelsRemovidos = 0;
+        for (let s = 0; s < n; s++) {
+            if (fases[s] !== 0 || visitado[s]) continue;
+            let topo = 0, tam = 0;
+            pilha[topo++] = s;
+            visitado[s] = 1;
+            while (topo) {
+                const i = pilha[--topo];
+                comp[tam++] = i;
+                const y = (i / w) | 0, x = i - y * w;
+                for (let dy = -1; dy <= 1; dy++) {
+                    const yy = y + dy;
+                    if (yy < 0 || yy >= h) continue;
+                    for (let dx = -1; dx <= 1; dx++) {
+                        const xx = x + dx;
+                        if (xx < 0 || xx >= w) continue;
+                        const j = yy * w + xx;
+                        if (fases[j] === 0 && !visitado[j]) { visitado[j] = 1; pilha[topo++] = j; }
+                    }
+                }
+            }
+            if (tam < areaMinPx) {
+                for (let t = 0; t < tam; t++) { fases[comp[t]] = 1; seg.filtrado[comp[t]] = 1; }
+                removidas++;
+                pixelsRemovidos += tam;
+            } else {
+                particulas++;
+            }
+        }
+        return { particulas, removidas, pixelsRemovidos, areaMinPx };
     }
 
     /** K-Means++ em CIELAB; retorna { centros, compacidade }. */
@@ -646,7 +735,7 @@
      * Amostras com sólidos < FRACAO_SOLIDOS_MIN da sua área (topo livre, zonas excluídas) são descartadas.
      * Retorna { M (ou null), amostras (com .usada), nUsadas, ladoMm }.
      */
-    function indiceLacey(seg, mmPorPx, { amostragem = 'faixas', tamanhoMm = TAMANHO_AMOSTRA_LACEY_MM } = {}) {
+    function indiceLacey(seg, mmPorPx, { amostragem = 'faixas', tamanhoMm = TAMANHO_AMOSTRA_LACEY_MM, dParticulaMm = D_PARTICULA_MM } = {}) {
         const { fases, width: w, height: h } = seg;
         const ladoPx = Math.max(2, Math.round(tamanhoMm / mmPorPx));
         const amostras = gerarAmostrasLacey(w, h, ladoPx, amostragem);
@@ -663,7 +752,7 @@
             if (!a.usada) return;
             a.fracao = nComp / nSolidos;
             fracoes.push(a.fracao);
-            nParticulas.push(Math.max(1, nSolidos * mmPorPx * mmPorPx / (D_PARTICULA_MM * D_PARTICULA_MM)));
+            nParticulas.push(Math.max(1, nSolidos * mmPorPx * mmPorPx / (dParticulaMm * dParticulaMm)));
         });
 
         const resultado = { M: null, amostras, nUsadas: fracoes.length, ladoMm: ladoPx * mmPorPx };
@@ -679,18 +768,28 @@
         return resultado;
     }
 
+    /**
+     * media_comp: fração de compósito na área de sólidos da ROI inteira (Σ compósito / Σ sólidos),
+     * a mesma grandeza medida nos padrões de calibração. A média simples das cotas
+     * (media_perfil) dá o mesmo peso a cotas com poucos grãos e não é usada na calibração.
+     */
     function calcularEstatisticas(seg, perfil, mmPorPx, lacey) {
         const validos = Array.from(perfil.cPct).filter(v => !Number.isNaN(v));
         const n = validos.length;
-        const media = n ? validos.reduce((s, v) => s + v, 0) / n : 0;
-        const desvio = n ? Math.sqrt(validos.reduce((s, v) => s + (v - media) ** 2, 0) / n) : 0;
-        let nExcluidos = 0, nIncertos = 0;
+        const mediaPerfil = n ? validos.reduce((s, v) => s + v, 0) / n : 0;
+        const desvio = n ? Math.sqrt(validos.reduce((s, v) => s + (v - mediaPerfil) ** 2, 0) / n) : 0;
+        let nExcluidos = 0, nIncertos = 0, nComp = 0, nAreia = 0;
         for (let i = 0; i < seg.fases.length; i++) {
-            if (seg.fases[i] === FASE_EXCLUIDA) nExcluidos++;
-            else if (seg.fases[i] === FASE_INCERTA) nIncertos++;
+            const f = seg.fases[i];
+            if (f === 0) nComp++;
+            else if (f === 1) nAreia++;
+            else if (f === FASE_EXCLUIDA) nExcluidos++;
+            else if (f === FASE_INCERTA) nIncertos++;
         }
+        const media = nComp + nAreia > 0 ? 100 * nComp / (nComp + nAreia) : 0;
         return {
             media_comp: arredondar(media, 3),
+            media_perfil: arredondar(mediaPerfil, 3),
             desvio_comp: arredondar(desvio, 3),
             max_comp: n ? arredondar(Math.max(...validos), 3) : 0,
             altura_total_mm: arredondar(seg.height * mmPorPx, 1),
@@ -703,7 +802,7 @@
     }
 
     /** Linhas igualmente espaçadas para a tabela (somente cotas com leito), topo primeiro. */
-    function amostrarPerfil(perfil, cMassico) {
+    function amostrarPerfil(perfil, cMassico, cDensidade) {
         const validos = [];
         perfil.cPct.forEach((v, i) => { if (!Number.isNaN(v)) validos.push(i); });
         if (!validos.length) return [];
@@ -716,6 +815,7 @@
                 z_mm: arredondar(perfil.zMm[i], 2),
                 c_pct: arredondar(perfil.cPct[i], 3),
                 c_pct_massico: cMassico ? arredondar(cMassico[i], 3) : null,
+                c_pct_densidade: cDensidade ? arredondar(cDensidade[i], 3) : null,
                 gas_pct: arredondar(perfil.gasPct[i], 2),
             });
         }
@@ -726,8 +826,11 @@
      * Análise completa de uma ROI.
      * coef: curva de calibração do modo ({a, b, ...}) ou null.
      * opcoesLacey: { amostragem: 'faixas' | 'grade', tamanhoMm }.
+     * densidades (opcional): { rhoComp, rhoAreia, k } em g/cm³; k = fator de visibilidade
+     * (ajustado nos padrões por ajustarFatorK, ou 1 sem padrões).
+     * opcoesFiltro (opcional): { dMinMm } diâmetro mínimo de uma mancha de compósito (0 = sem filtro).
      */
-    function analisarROI(img, larguraMm, modo, coef, opcoesLacey = {}) {
+    function analisarROI(img, larguraMm, modo, coef, opcoesLacey = {}, densidades = null, opcoesFiltro = null) {
         if (!MODOS.includes(modo)) throw new Error(`Modo de leitura inválido: ${modo}.`);
         if (!(larguraMm > 0)) throw new Error('A largura da coluna deve ser positiva.');
         if (img.width < 20 || img.height < 20) throw new Error('ROI muito pequena ou fora da imagem.');
@@ -739,10 +842,17 @@
         // Escala: assume-se que a largura da ROI corresponde à largura interna da coluna
         const mmPorPx = larguraMm / img.width;
         const seg = segmentar(img, modo);
+        const dMinMm = opcoesFiltro && opcoesFiltro.dMinMm > 0 ? opcoesFiltro.dMinMm : 0;
+        const filtro = filtrarPorTamanho(seg, mmPorPx, dMinMm);
         const perfil = calcularPerfil(seg, mmPorPx);
-        const lacey = indiceLacey(seg, mmPorPx, { amostragem, tamanhoMm });
+        const lacey = indiceLacey(seg, mmPorPx, { amostragem, tamanhoMm, dParticulaMm: opcoesLacey.dParticulaMm > 0 ? opcoesLacey.dParticulaMm : D_PARTICULA_MM });
         const stats = calcularEstatisticas(seg, perfil, mmPorPx, lacey);
         stats.lacey_amostragem = amostragem;
+        stats.filtro_d_min_mm = dMinMm;
+        stats.manchas_pebd = filtro.particulas;
+        stats.manchas_removidas = filtro.removidas;
+        stats.filtrado_pct = arredondar(100 * filtro.pixelsRemovidos / seg.fases.length, 2);
+        stats.px_por_mm = arredondar(1 / mmPorPx, 2);
 
         stats.calibrado = !!coef;
         let cMassico = null;
@@ -750,19 +860,31 @@
             const corrigir = v => Math.min(100, Math.max(0, coef.a + coef.b * v));
             cMassico = perfil.cPct.map(v => (Number.isNaN(v) ? NaN : corrigir(v)));
             stats.media_comp_massica = arredondar(corrigir(stats.media_comp), 3);
+            stats.abaixo_ld = coef.ld !== null && coef.ld !== undefined && stats.media_comp_massica < coef.ld;
+        }
+
+        let cDensidade = null;
+        if (densidades) {
+            const { rhoComp, rhoAreia, k } = densidades;
+            const converter = v => fracaoMassicaDensidades(v, rhoComp, rhoAreia, k);
+            cDensidade = perfil.cPct.map(v => (Number.isNaN(v) ? NaN : converter(v)));
+            stats.media_comp_densidade = arredondar(converter(stats.media_comp), 3);
+            stats.fator_k = arredondar(k, 4);
         }
 
         const paraLista = (arr, casas) => Array.from(arr, v => (Number.isNaN(v) ? null : arredondar(v, casas)));
+        const vazia = () => Array.from(perfil.zMm, () => null);
         return {
             seg,
             perfil,
             stats,
             amostrasLacey: lacey.amostras,
-            tabela: amostrarPerfil(perfil, cMassico),
+            tabela: amostrarPerfil(perfil, cMassico, cDensidade),
             perfil_completo: {
                 z_mm: paraLista(perfil.zMm, 2),
                 c_pct: paraLista(perfil.cPct, 3),
-                c_pct_massico: cMassico ? paraLista(cMassico, 3) : Array.from(perfil.zMm, () => null),
+                c_pct_massico: cMassico ? paraLista(cMassico, 3) : vazia(),
+                c_pct_densidade: cDensidade ? paraLista(cDensidade, 3) : vazia(),
                 gas_pct: paraLista(perfil.gasPct, 2),
             },
         };
@@ -772,11 +894,20 @@
     // Calibração (curva fração medida na ROI -> fração mássica real)
     // -----------------------------------------------------------------------
 
-    /** Fração de compósito (%) numa amostra homogênea: ROI inteira, sem perfil por linha. */
-    function medirFracaoHomogenea(img, modo) {
+    /**
+     * Fração de compósito (%) numa amostra homogênea: ROI inteira, sem perfil por linha.
+     * opcoesFiltro (opcional): { dMinMm, larguraMm } aplica o mesmo filtro de tamanho da análise;
+     * larguraMm = largura real da ROI do padrão (define a escala).
+     */
+    function medirFracaoHomogenea(img, modo, opcoesFiltro = null) {
         if (!MODOS.includes(modo)) throw new Error(`Modo de leitura inválido: ${modo}.`);
         if (img.width < 20 || img.height < 20) throw new Error('ROI muito pequena ou fora da imagem.');
-        const { fases } = segmentar(img, modo);
+        const seg = segmentar(img, modo);
+        if (opcoesFiltro && opcoesFiltro.dMinMm > 0) {
+            if (!(opcoesFiltro.larguraMm > 0)) throw new Error('Informe a largura real da ROI do padrão (mm) para usar o filtro de tamanho.');
+            filtrarPorTamanho(seg, opcoesFiltro.larguraMm / img.width, opcoesFiltro.dMinMm);
+        }
+        const { fases } = seg;
         let comp = 0, areia = 0;
         for (let i = 0; i < fases.length; i++) {
             if (fases[i] === 0) comp++; else if (fases[i] === 1) areia++;
@@ -831,6 +962,46 @@
         };
     }
 
+    /**
+     * Modelo físico área -> massa:
+     *   w = ρc·k·A / (ρc·k·A + ρa·(1 - A))
+     * A = fração de área de compósito nos sólidos (0-100), ρc e ρa = densidades reais dos sólidos.
+     * k = fator de visibilidade: quanto o compósito aparece na imagem em relação ao volume que
+     * ocupa (segregação na superfície, tamanho de grão, sombras). k = 1: área = volume.
+     */
+    function fracaoMassicaDensidades(aPct, rhoComp, rhoAreia, k = 1) {
+        const a = Math.min(1, Math.max(0, aPct / 100));
+        const comp = rhoComp * k * a, areia = rhoAreia * (1 - a);
+        return comp + areia > 0 ? 100 * comp / (comp + areia) : 0;
+    }
+
+    /**
+     * Ajusta k aos padrões ({x: % área, y: % mássico}) por mínimos quadrados
+     * (busca da razão áurea em ln k). Basta 1 padrão; R² só com 2 ou mais.
+     */
+    function ajustarFatorK(pontos, rhoComp, rhoAreia) {
+        if (!pontos.length) throw new Error('Cadastre ao menos um padrão para ajustar o fator k.');
+        if (!(rhoComp > 0 && rhoAreia > 0)) throw new Error('As densidades devem ser positivas.');
+        const sse = k => pontos.reduce((s, p) => s + (p.y - fracaoMassicaDensidades(p.x, rhoComp, rhoAreia, k)) ** 2, 0);
+        const g = (Math.sqrt(5) - 1) / 2;
+        let a = Math.log(1e-4), b = Math.log(1e4);
+        for (let i = 0; i < 200; i++) {
+            const c = b - g * (b - a), d = a + g * (b - a);
+            if (sse(Math.exp(c)) < sse(Math.exp(d))) b = d; else a = c;
+        }
+        const k = Math.exp((a + b) / 2);
+        const n = pontos.length;
+        const my = pontos.reduce((s, p) => s + p.y, 0) / n;
+        const ssTot = pontos.reduce((s, p) => s + (p.y - my) ** 2, 0);
+        const ssRes = sse(k);
+        return {
+            k: arredondar(k, 5),
+            r2: n >= 2 && ssTot > 0 ? arredondar(1 - ssRes / ssTot, 5) : null,
+            rmse: arredondar(Math.sqrt(ssRes / n), 4),
+            n,
+        };
+    }
+
     // -----------------------------------------------------------------------
     // Imagens de saída (precisam de DOM / canvas)
     // -----------------------------------------------------------------------
@@ -838,7 +1009,7 @@
     /**
      * Original | segmentação colorida, lado a lado, como JPEG (data URL).
      * Zonas de exclusão aparecem na segmentação em cinza hachurado, sem cor de fase;
-     * pixels incertos (modo base de referências) em roxo.
+     * pixels incertos (modo base de referências) em roxo; manchas removidas pelo filtro de tamanho em laranja.
      * amostrasLacey (opcional): contorno branco nas amostras usadas no Índice de Lacey.
      */
     function gerarOverlay(img, seg, amostrasLacey) {
@@ -860,7 +1031,7 @@
                     d[esq + c] = img.data[src + c];
                     d[dir + c] = fase === FASE_EXCLUIDA
                         ? ((x + y) % 8 < 2 ? 95 : 175)
-                        : Math.round(0.35 * img.data[src + c] + 0.65 * (fase === FASE_INCERTA ? COR_INCERTO : CORES_FASES[fase])[c]);
+                        : Math.round(0.35 * img.data[src + c] + 0.65 * (fase === FASE_INCERTA ? COR_INCERTO : seg.filtrado && seg.filtrado[y * w + x] ? COR_FILTRADO : CORES_FASES[fase])[c]);
                 }
             }
         }
@@ -1024,7 +1195,7 @@
         desenharLinha(ctx, [stats.media_comp, stats.media_comp], [ey.min, ey.max], eixC.px, eixC.py, '#1e3a8a', 1.2, [6, 4]);
         desenharLegenda(ctx, [
             { texto: 'C(z)', cor: '#8b0000' },
-            { texto: `Média = ${stats.media_comp.toFixed(2)} %`, cor: '#1e3a8a', tracejado: [6, 4] },
+            { texto: `Média (área total) = ${stats.media_comp.toFixed(2)} %`, cor: '#1e3a8a', tracejado: [6, 4] },
         ], caixaC.x + caixaC.w - 8, caixaC.y + 8);
 
         const eixG = desenharEixos(ctx, caixaG, eg, ey, {
@@ -1044,15 +1215,24 @@
         return canvas.toDataURL('image/png');
     }
 
-    /** Pontos dos padrões + reta ajustada (PNG data URL). */
-    function gerarGraficoCalibracao(pontos, coef, modo) {
+    /**
+     * Pontos dos padrões + reta ajustada (PNG data URL).
+     * modeloK (opcional): { k, rhoComp, rhoAreia } desenha também a curva do modelo por densidades.
+     */
+    function gerarGraficoCalibracao(pontos, coef, modo, modeloK) {
         const W = 600, H = 480;
         const { canvas, ctx } = novoCanvasGrafico(W, H);
         const xs = pontos.map(p => p.x), ys = pontos.map(p => p.y);
-        const xMax = Math.max(...xs, 1e-6) * 1.15;
+        const xMax = Math.min(100, Math.max(...xs, 1e-6) * 1.15);
         const yReta = [coef.a, coef.a + coef.b * xMax];
+        let xCurva = null, yCurva = null;
+        if (modeloK) {
+            xCurva = Array.from({ length: 101 }, (_, i) => i * xMax / 100);
+            yCurva = xCurva.map(x => fracaoMassicaDensidades(x, modeloK.rhoComp, modeloK.rhoAreia, modeloK.k));
+        }
         const ex = marcasEixo(0, xMax);
-        const ey = marcasEixo(Math.min(0, ...ys, ...yReta), Math.max(...ys, ...yReta, 1e-6) * 1.1);
+        const yTodos = ys.concat(yReta, yCurva || []);
+        const ey = marcasEixo(Math.min(0, ...yTodos), Math.max(...yTodos, 1e-6) * 1.1);
 
         const nomeModo = { uv: 'UV', referencia: 'base de referências' }[modo] || 'luminosidade';
         const eix = desenharEixos(ctx, { x: 80, y: 40, w: 490, h: 370 }, ex, ey, {
@@ -1061,12 +1241,15 @@
             rotuloY: 'Fração mássica real (%)',
         });
         desenharLinha(ctx, [0, xMax], yReta, eix.px, eix.py, '#8b0000', 1.6);
+        if (modeloK) desenharLinha(ctx, xCurva, yCurva, eix.px, eix.py, '#0d9488', 1.6, [6, 4]);
         ctx.fillStyle = '#1e3a8a';
         pontos.forEach(p => { ctx.beginPath(); ctx.arc(eix.px(p.x), eix.py(p.y), 5, 0, 2 * Math.PI); ctx.fill(); });
-        desenharLegenda(ctx, [
+        const legenda = [
             { texto: 'Padrões', cor: '#1e3a8a', ponto: true },
-            { texto: `y = ${coef.a.toFixed(3)} + ${coef.b.toFixed(3)}x`, cor: '#8b0000' },
-        ], 570 - 8, 48);
+            { texto: `Reta: y = ${coef.a.toFixed(3)} + ${coef.b.toFixed(3)}x`, cor: '#8b0000' },
+        ];
+        if (modeloK) legenda.push({ texto: `Densidades: k = ${modeloK.k.toFixed(3)}`, cor: '#0d9488', tracejado: [6, 4] });
+        desenharLegenda(ctx, legenda, 570 - 8, 48);
         return canvas.toDataURL('image/png');
     }
 
@@ -1076,6 +1259,13 @@
         analisarROI,
         medirFracaoHomogenea,
         ajustarCurva,
+        fracaoMassicaDensidades,
+        FORMATOS,
+        limiteTamanho,
+        areaProjetadaMm2,
+        volumeMm3,
+        diametroEquivalente,
+        ajustarFatorK,
         gerarGrafico,
         gerarGraficoCalibracao,
         gerarOverlay,
@@ -1090,7 +1280,7 @@
         temModeloReferencia: () => !!modeloReferencia,
         lab8ParaRgb,
         // expostas para testes
-        _interno: { definirTentativas: n => { KMEANS_TENTATIVAS = n; }, desfoqueGaussiano, rgbParaLab8, segmentar, calcularPerfil, indiceLacey, somaMovel, classificarLab },
+        _interno: { definirTentativas: n => { KMEANS_TENTATIVAS = n; }, filtrarPorTamanho, desfoqueGaussiano, rgbParaLab8, segmentar, calcularPerfil, indiceLacey, somaMovel, classificarLab },
     };
 
     if (typeof module !== 'undefined' && module.exports) module.exports = Analise;

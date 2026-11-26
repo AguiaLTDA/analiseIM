@@ -18,6 +18,24 @@ como site estático no GitHub Pages, de graça, e as imagens analisadas não sae
 **Calibração:** fica salva no navegador de quem calibrou. Use **Exportar Calibração** para guardar o arquivo
 `.json` e **Importar Calibração** para levar a mesma curva a outro computador ou navegador.
 
+**Concentração média:** é a fração de compósito na área de sólidos da ROI inteira (Σ compósito / Σ sólidos),
+a mesma grandeza medida nos padrões de calibração; a média simples das cotas aparece abaixo, só como referência.
+
+**Conversão por densidades:** informe a densidade real do compósito e da areia. A fração de área A vira
+fração mássica por w = ρc·k·A / (ρc·k·A + ρa·(1 − A)). O fator k (visibilidade do compósito na imagem:
+segregação na superfície, tamanho de grão, sombras) é ajustado nos padrões de calibração do modo; sem padrões,
+k = 1. Basta um padrão para ajustar k; a aba Calibração mostra k, R² e a curva junto da reta.
+
+**Partículas e filtro de tamanho:** no painel Análise, escolha o formato do PEBD e da areia (esférica: Ø;
+elíptica ou briquete: X, Y e Z, com X e Y no plano da foto e Z a espessura). A área vista na foto é π·Ø²/4,
+π·X·Y/4 (elipse) ou X·Y (briquete); o diâmetro equivalente é o do círculo de mesma área. Com o filtro ligado,
+manchas de compósito menores que a média geométrica dos diâmetros equivalentes (≈ 1,38 mm para 1,9 e 1,0 mm)
+voltam a ser areia: são sombras entre grãos e grãos escuros de areia (em laranja na máscara). Manchas grandes
+nunca são removidas, porque grãos de PEBD encostados formam uma mancha só. O filtro depende da escala: a
+largura informada deve ser a largura real da ROI (no padrão de calibração, o campo *Largura real da ROI*).
+Cada padrão guarda o filtro usado; se ele mudar, o app avisa que a curva precisa ser refeita. O Ø equivalente
+da areia também define o nº de partículas por amostra no Índice de Lacey.
+
 **Base de referências (modo supervisionado):** na aba *Base de Referências*, envie uma foto de referência,
 arraste para selecionar o quadro que servirá de referência (como na ROI; ele abre ampliado) e pinte nele
 regiões de PEBD, areia e gás/fundo. O app guarda uma amostra das cores (CIELAB) de cada classe, ajusta uma
