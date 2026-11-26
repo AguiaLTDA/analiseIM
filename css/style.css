@@ -455,3 +455,29 @@ th {
 
 .nuvem-status.ok { color: #047857; }
 .nuvem-status.aviso { color: #b45309; }
+
+/* Filtro de tamanho de partícula (painel Análise) */
+.filtro-tamanho .sub-valor {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+}
+
+.filtro-tamanho label.input-group {
+    cursor: pointer;
+    font-weight: 600;
+}
+
+.filtro-tamanho .particula-nome {
+    font-weight: 700;
+    color: var(--primary);
+    min-width: 48px;
+}
+
+.filtro-tamanho input.dim {
+    width: 70px;
+}
+
+/* Esférica mostra só Ø; elíptica e briquete mostram X, Y e Z */
+.filtro-tamanho .particula .dim-xyz { display: none; }
+.filtro-tamanho .particula.xyz .dim-xyz { display: flex; }
+.filtro-tamanho .particula.xyz .dim-esferica { display: none; }

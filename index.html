@@ -64,6 +64,63 @@
                     <label for="laceyTamanho">Tamanho da amostra (mm):</label>
                     <input type="number" id="laceyTamanho" value="5" min="0.5" step="0.5" style="width: 80px;">
                 </div>
+                <div class="input-group" title="Densidade real do sólido (não a aparente do leito). Use o valor medido do seu compósito.">
+                    <label for="rhoComp">ρ compósito (g/cm³):</label>
+                    <input type="number" id="rhoComp" value="0.92" min="0.01" step="0.01" style="width: 80px;">
+                </div>
+                <div class="input-group" title="Densidade real da areia (quartzo ≈ 2,65 g/cm³)">
+                    <label for="rhoAreia">ρ areia (g/cm³):</label>
+                    <input type="number" id="rhoAreia" value="2.65" min="0.01" step="0.01" style="width: 80px;">
+                </div>
+            </div>
+
+            <div class="filtro-tamanho">
+                <!-- Uma linha por material: formato + dimensões (X e Y no plano da foto, Z = espessura) -->
+                <div class="controls-row particula" data-material="pebd">
+                    <span class="particula-nome">PEBD</span>
+                    <div class="input-group">
+                        <label for="pebdFormato">Formato:</label>
+                        <select id="pebdFormato" class="formato">
+                            <option value="esferica">Esférica</option>
+                            <option value="eliptica">Elíptica</option>
+                            <option value="briquete">Briquete</option>
+                        </select>
+                    </div>
+                    <div class="input-group dim-esferica"><label for="pebdD">Ø (mm):</label>
+                        <input type="number" id="pebdD" class="dim" data-dim="d" value="1.9" min="0.05" step="0.1"></div>
+                    <div class="input-group dim-xyz"><label for="pebdX">X (mm):</label>
+                        <input type="number" id="pebdX" class="dim" data-dim="x" value="1.9" min="0.05" step="0.1"></div>
+                    <div class="input-group dim-xyz"><label for="pebdY">Y (mm):</label>
+                        <input type="number" id="pebdY" class="dim" data-dim="y" value="1.9" min="0.05" step="0.1"></div>
+                    <div class="input-group dim-xyz"><label for="pebdZ">Z (mm):</label>
+                        <input type="number" id="pebdZ" class="dim" data-dim="z" value="1.9" min="0.05" step="0.1"></div>
+                </div>
+                <div class="controls-row particula" data-material="areia">
+                    <span class="particula-nome">Areia</span>
+                    <div class="input-group">
+                        <label for="areiaFormato">Formato:</label>
+                        <select id="areiaFormato" class="formato">
+                            <option value="esferica">Esférica</option>
+                            <option value="eliptica">Elíptica</option>
+                            <option value="briquete">Briquete</option>
+                        </select>
+                    </div>
+                    <div class="input-group dim-esferica"><label for="areiaD">Ø (mm):</label>
+                        <input type="number" id="areiaD" class="dim" data-dim="d" value="1.0" min="0.05" step="0.1"></div>
+                    <div class="input-group dim-xyz"><label for="areiaX">X (mm):</label>
+                        <input type="number" id="areiaX" class="dim" data-dim="x" value="1.0" min="0.05" step="0.1"></div>
+                    <div class="input-group dim-xyz"><label for="areiaY">Y (mm):</label>
+                        <input type="number" id="areiaY" class="dim" data-dim="y" value="1.0" min="0.05" step="0.1"></div>
+                    <div class="input-group dim-xyz"><label for="areiaZ">Z (mm):</label>
+                        <input type="number" id="areiaZ" class="dim" data-dim="z" value="1.0" min="0.05" step="0.1"></div>
+                </div>
+                <div class="controls-row">
+                    <label class="input-group" title="Manchas de compósito menores que o limite voltam a ser areia (sombras, grãos escuros de areia). Exige a escala certa: a largura informada deve ser a largura real da ROI.">
+                        <input type="checkbox" id="usarFiltroTamanho" checked>
+                        Filtro de tamanho
+                    </label>
+                    <span class="sub-valor" id="limiteTamanhoInfo"></span>
+                </div>
             </div>
 
             <div class="ferramentas-roi">
@@ -95,8 +152,9 @@
 
             <div class="stats-grid">
                 <div class="stat-card">
-                    <div class="label">Conc. Média (%)</div>
+                    <div class="label">Conc. Média (% área)</div>
                     <div class="value" id="valMedia">-</div>
+                    <div class="sub-valor" id="valMediaInfo"></div>
                 </div>
                 <div class="stat-card">
                     <div class="label">Desvio Padrão (&sigma;)</div>
@@ -114,6 +172,17 @@
                 <div class="stat-card">
                     <div class="label">Conc. Mássica Calibrada (%)</div>
                     <div class="value" id="valMassica" style="font-size: 1.1rem;">-</div>
+                    <div class="sub-valor" id="valMassicaInfo"></div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">Conc. Mássica por Densidades (%)</div>
+                    <div class="value" id="valDensidade" style="font-size: 1.1rem;">-</div>
+                    <div class="sub-valor" id="valDensidadeInfo"></div>
+                </div>
+                <div class="stat-card">
+                    <div class="label">Filtro de Tamanho</div>
+                    <div class="value" id="valFiltro" style="font-size: 1.1rem;">-</div>
+                    <div class="sub-valor" id="valFiltroInfo"></div>
                 </div>
                 <div class="stat-card">
                     <div class="label">Área Excluída da ROI (%)</div>
@@ -150,11 +219,12 @@
                             <th>Cota Vertical z (mm)</th>
                             <th>Concentração Compósito (%)</th>
                             <th>Conc. Mássica Calibrada (%)</th>
+                            <th>Conc. Mássica Densidades (%)</th>
                             <th>Fração de Gás (%)</th>
                         </tr>
                     </thead>
                     <tbody id="tabelaCorpo">
-                        <tr><td colspan="4" style="color: var(--text-muted);">Nenhum dado processado ainda.</td></tr>
+                        <tr><td colspan="5" style="color: var(--text-muted);">Nenhum dado processado ainda.</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -295,6 +365,10 @@
                     <label for="calFracaoReal">Fração mássica real (%):</label>
                     <input type="number" id="calFracaoReal" min="0" max="100" step="0.1" placeholder="1 a 5">
                 </div>
+                <div class="input-group" title="Largura real (mm) da região selecionada no padrão. Define a escala do filtro de tamanho, que usa os diâmetros da aba Análise.">
+                    <label for="calLarguraMm">Largura real da ROI (mm):</label>
+                    <input type="number" id="calLarguraMm" value="60.0" min="0.1" step="0.5" style="width: 80px;">
+                </div>
             </div>
             <div class="controls-row">
                 <input type="file" id="calInputArquivo" accept="image/*" style="display: none;">
@@ -341,11 +415,12 @@
                             <th>#</th>
                             <th>Fração medida na ROI (% área)</th>
                             <th>Fração real (%)</th>
+                            <th>Filtro (Ø mín.)</th>
                             <th></th>
                         </tr>
                     </thead>
                     <tbody id="calTabelaPontos">
-                        <tr><td colspan="4" style="color: var(--text-muted);">Nenhum ponto cadastrado.</td></tr>
+                        <tr><td colspan="5" style="color: var(--text-muted);">Nenhum ponto cadastrado.</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -387,6 +462,16 @@
                     <div class="stat-card">
                         <div class="label">Limite de Quantificação (% mássico)</div>
                         <div class="value" id="calLQ" style="font-size: 1.1rem;">-</div>
+                    </div>
+                    <div class="stat-card" title="w = ρc·k·A / (ρc·k·A + ρa·(1−A)), com as densidades da aba Análise">
+                        <div class="label">Modelo por densidades: fator k</div>
+                        <div class="value" id="calK" style="font-size: 1.1rem;">-</div>
+                        <div class="sub-valor" id="calKInfo"></div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="label">Modelo por densidades: R²</div>
+                        <div class="value" id="calKR2" style="font-size: 1.1rem;">-</div>
+                        <div class="sub-valor" id="calKRmse"></div>
                     </div>
                 </div>
                 <div class="result-view" style="margin-top: 14px;">
