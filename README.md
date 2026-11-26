@@ -36,6 +36,10 @@ largura informada deve ser a largura real da ROI (no padrão de calibração, o 
 Cada padrão guarda o filtro usado; se ele mudar, o app avisa que a curva precisa ser refeita. O Ø equivalente
 da areia também define o nº de partículas por amostra no Índice de Lacey.
 
+**Concentração volumétrica por tamanho:** só pela forma e tamanho, sem densidade nem calibração. Cada
+unidade de área vista vale a espessura média do grão (volume ÷ área vista: esfera 2·Ø/3, elipsoide 2·Z/3,
+briquete Z): φ = A·t_PEBD / (A·t_PEBD + (1 − A)·t_areia).
+
 **Base de referências (modo supervisionado):** na aba *Base de Referências*, envie uma foto de referência,
 arraste para selecionar o quadro que servirá de referência (como na ROI; ele abre ampliado) e pinte nele
 regiões de PEBD, areia e gás/fundo. O app guarda uma amostra das cores (CIELAB) de cada classe, ajusta uma
