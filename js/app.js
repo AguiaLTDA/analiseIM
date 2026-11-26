@@ -865,7 +865,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const coef = Calibracao.carregar()[modo].coef;
             const densidades = modeloDensidades(modo);
             const resultado = Analise.analisarROI(pixels, larguraMm, modo, coef, opcoesLacey, densidades,
-                                                  { dMinMm: tamanhos.dMinMm });
+                                                  { dMinMm: tamanhos.dMinMm, pebd: tamanhos.pebd, areia: tamanhos.areia });
             resultado.ajusteK = densidades ? densidades.ajuste : null;
             resultado.calibOutroFiltro = calibracaoComOutroFiltro(modo, tamanhos.dMinMm);
             resultado.plot = Analise.gerarGrafico(resultado.perfil, resultado.stats);
@@ -911,6 +911,13 @@ document.addEventListener('DOMContentLoaded', () => {
                   (avisoFiltro ? ' · ' + avisoFiltro : '')
                 : 'k = 1 (sem padrões: só densidades)';
         const st = data.stats;
+        const temTamanho = st.media_comp_tamanho !== undefined;
+        document.getElementById('valTamanho').innerText = temTamanho
+            ? st.media_comp_tamanho + ' %' : 'partículas inválidas';
+        document.getElementById('valTamanhoInfo').innerText = temTamanho
+            ? `espessura média do grão: PEBD ${st.espessura_pebd_mm} · areia ${st.espessura_areia_mm} mm ` +
+              '(sem densidade, sem calibração)'
+            : '';
         document.getElementById('valFiltro').innerText = st.filtro_d_min_mm > 0
             ? `${st.manchas_pebd} manchas de PEBD` : 'desligado';
         document.getElementById('valFiltroInfo').innerText = st.filtro_d_min_mm > 0

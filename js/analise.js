@@ -207,6 +207,26 @@
         return Math.sqrt(4 * areaProjetadaMm2(p) / Math.PI);
     }
 
+    /** Espessura média = volume / área projetada (mm): esfera 2·Ø/3, elipsoide 2·Z/3, briquete Z. */
+    function espessuraMedia(p) {
+        const a = areaProjetadaMm2(p);
+        return a > 0 ? volumeMm3(p) / a : 0;
+    }
+
+    /**
+     * Fração volumétrica de compósito (%) só pelo tamanho/formato, sem densidades:
+     * cada unidade de área vista vale a espessura média do seu grão.
+     *   φ = A·tc / (A·tc + (1 - A)·ta)
+     * Retorna null se alguma partícula for inválida.
+     */
+    function fracaoVolumetricaTamanho(aPct, pebd, areia) {
+        const tc = espessuraMedia(pebd), ta = espessuraMedia(areia);
+        if (!(tc > 0 && ta > 0)) return null;
+        const a = Math.min(1, Math.max(0, aPct / 100));
+        const comp = a * tc, resto = (1 - a) * ta;
+        return comp + resto > 0 ? 100 * comp / (comp + resto) : 0;
+    }
+
     /**
      * Limite de corte do filtro (diâmetro equivalente, mm) entre a partícula de PEBD e a de areia:
      * média geométrica dos diâmetros equivalentes (equilibra a razão de áreas). 0 se inválido.
@@ -828,7 +848,8 @@
      * opcoesLacey: { amostragem: 'faixas' | 'grade', tamanhoMm }.
      * densidades (opcional): { rhoComp, rhoAreia, k } em g/cm³; k = fator de visibilidade
      * (ajustado nos padrões por ajustarFatorK, ou 1 sem padrões).
-     * opcoesFiltro (opcional): { dMinMm } diâmetro mínimo de uma mancha de compósito (0 = sem filtro).
+     * opcoesFiltro (opcional): { dMinMm, pebd, areia } diâmetro mínimo de uma mancha de compósito
+     * (0 = sem filtro) e partículas ({ formato, d, x, y, z }) para a fração volumétrica por tamanho.
      */
     function analisarROI(img, larguraMm, modo, coef, opcoesLacey = {}, densidades = null, opcoesFiltro = null) {
         if (!MODOS.includes(modo)) throw new Error(`Modo de leitura inválido: ${modo}.`);
@@ -853,6 +874,14 @@
         stats.manchas_removidas = filtro.removidas;
         stats.filtrado_pct = arredondar(100 * filtro.pixelsRemovidos / seg.fases.length, 2);
         stats.px_por_mm = arredondar(1 / mmPorPx, 2);
+        if (opcoesFiltro && opcoesFiltro.pebd && opcoesFiltro.areia) {
+            const vol = fracaoVolumetricaTamanho(stats.media_comp, opcoesFiltro.pebd, opcoesFiltro.areia);
+            if (vol !== null) {
+                stats.media_comp_tamanho = arredondar(vol, 3);
+                stats.espessura_pebd_mm = arredondar(espessuraMedia(opcoesFiltro.pebd), 3);
+                stats.espessura_areia_mm = arredondar(espessuraMedia(opcoesFiltro.areia), 3);
+            }
+        }
 
         stats.calibrado = !!coef;
         let cMassico = null;
@@ -1265,6 +1294,8 @@
         areaProjetadaMm2,
         volumeMm3,
         diametroEquivalente,
+        espessuraMedia,
+        fracaoVolumetricaTamanho,
         ajustarFatorK,
         gerarGrafico,
         gerarGraficoCalibracao,
